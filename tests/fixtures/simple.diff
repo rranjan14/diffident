@@ -1,0 +1,2868 @@
+diff --git a/apps/mobile/db/drizzle/0027_shared_project_catalog.sql b/apps/mobile/db/drizzle/0027_shared_project_catalog.sql
+new file mode 100644
+index 00000000000..ac9416e4b52
+--- /dev/null
++++ b/apps/mobile/db/drizzle/0027_shared_project_catalog.sql
+@@ -0,0 +1,7 @@
++ALTER TABLE `projects` ADD `limit_chat_context_to_project` integer DEFAULT true NOT NULL;--> statement-breakpoint
++ALTER TABLE `projects` ADD `ownership_scope` text DEFAULT 'personal' NOT NULL;--> statement-breakpoint
++ALTER TABLE `projects` ADD `visibility` text DEFAULT 'private' NOT NULL;--> statement-breakpoint
++ALTER TABLE `projects` ADD `effective_role` text;--> statement-breakpoint
++ALTER TABLE `projects` ADD `access_source` text;--> statement-breakpoint
++ALTER TABLE `projects` ADD `capabilities` text DEFAULT '{}' NOT NULL;--> statement-breakpoint
++ALTER TABLE `projects` ADD `version` integer DEFAULT 1 NOT NULL;
+diff --git a/apps/mobile/db/drizzle/meta/0027_snapshot.json b/apps/mobile/db/drizzle/meta/0027_snapshot.json
+new file mode 100644
+index 00000000000..48430b72d49
+--- /dev/null
++++ b/apps/mobile/db/drizzle/meta/0027_snapshot.json
+@@ -0,0 +1,1594 @@
++{
++  "version": "6",
++  "dialect": "sqlite",
++  "id": "6106e26d-af72-432f-8b27-51b35211cf04",
++  "prevId": "aaa024e2-239c-4be5-95e7-96a04bac82e7",
++  "tables": {
++    "arenas": {
++      "name": "arenas",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "deleted_at": {
++          "name": "deleted_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "sync_id": {
++          "name": "sync_id",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "agents": {
++          "name": "agents",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "thread_ids": {
++          "name": "thread_ids",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "exchanges": {
++          "name": "exchanges",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "arenas_created_at_idx": {
++          "name": "arenas_created_at_idx",
++          "columns": [
++            "created_at"
++          ],
++          "isUnique": false
++        },
++        "arenas_updated_at_idx": {
++          "name": "arenas_updated_at_idx",
++          "columns": [
++            "updated_at"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "calendar_events": {
++      "name": "calendar_events",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "deleted_at": {
++          "name": "deleted_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "sync_id": {
++          "name": "sync_id",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'confirmed'"
++        },
++        "summary": {
++          "name": "summary",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "description": {
++          "name": "description",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "start_datetime": {
++          "name": "start_datetime",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "end_datetime": {
++          "name": "end_datetime",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "html_link": {
++          "name": "html_link",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "attendees": {
++          "name": "attendees",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "hangout_link": {
++          "name": "hangout_link",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "conference_data": {
++          "name": "conference_data",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "event_type": {
++          "name": "event_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "calendar_events_start_datetime_idx": {
++          "name": "calendar_events_start_datetime_idx",
++          "columns": [
++            "start_datetime"
++          ],
++          "isUnique": false
++        },
++        "calendar_events_created_at_idx": {
++          "name": "calendar_events_created_at_idx",
++          "columns": [
++            "created_at"
++          ],
++          "isUnique": false
++        },
++        "calendar_events_updated_at_idx": {
++          "name": "calendar_events_updated_at_idx",
++          "columns": [
++            "updated_at"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "files": {
++      "name": "files",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "deleted_at": {
++          "name": "deleted_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "sync_id": {
++          "name": "sync_id",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "file_name": {
++          "name": "file_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "content_type": {
++          "name": "content_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "size": {
++          "name": "size",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "width": {
++          "name": "width",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "height": {
++          "name": "height",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "files_updated_at_id_idx": {
++          "name": "files_updated_at_id_idx",
++          "columns": [
++            "updated_at",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "files_created_at_idx": {
++          "name": "files_created_at_idx",
++          "columns": [
++            "created_at"
++          ],
++          "isUnique": false
++        },
++        "files_updated_at_idx": {
++          "name": "files_updated_at_idx",
++          "columns": [
++            "updated_at"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "journals": {
++      "name": "journals",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "deleted_at": {
++          "name": "deleted_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "sync_id": {
++          "name": "sync_id",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "text": {
++          "name": "text",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "sections": {
++          "name": "sections",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "date": {
++          "name": "date",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "viewed_at": {
++          "name": "viewed_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "document": {
++          "name": "document",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "journals_updated_at_id_idx": {
++          "name": "journals_updated_at_id_idx",
++          "columns": [
++            "updated_at",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "journals_created_at_idx": {
++          "name": "journals_created_at_idx",
++          "columns": [
++            "created_at"
++          ],
++          "isUnique": false
++        },
++        "journals_updated_at_idx": {
++          "name": "journals_updated_at_idx",
++          "columns": [
++            "updated_at"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "mcp_client_grants": {
++      "name": "mcp_client_grants",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "deleted_at": {
++          "name": "deleted_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "sync_id": {
++          "name": "sync_id",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "client_id": {
++          "name": "client_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "client_name": {
++          "name": "client_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "authorized_at": {
++          "name": "authorized_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "mcp_client_grants_client_id_idx": {
++          "name": "mcp_client_grants_client_id_idx",
++          "columns": [
++            "client_id"
++          ],
++          "isUnique": false
++        },
++        "mcp_client_grants_created_at_idx": {
++          "name": "mcp_client_grants_created_at_idx",
++          "columns": [
++            "created_at"
++          ],
++          "isUnique": false
++        },
++        "mcp_client_grants_updated_at_idx": {
++          "name": "mcp_client_grants_updated_at_idx",
++          "columns": [
++            "updated_at"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "meetings": {
++      "name": "meetings",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "deleted_at": {
++          "name": "deleted_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "sync_id": {
++          "name": "sync_id",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "summary": {
++          "name": "summary",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "tldr": {
++          "name": "tldr",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "personified_transcript": {
++          "name": "personified_transcript",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "notes": {
++          "name": "notes",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "prep": {
++          "name": "prep",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_app": {
++          "name": "source_app",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "event_id": {
++          "name": "event_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "summary_status": {
++          "name": "summary_status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'initial'"
++        },
++        "attendees": {
++          "name": "attendees",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "speakers": {
++          "name": "speakers",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "ended_at": {
++          "name": "ended_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "first_chunk_timestamp": {
++          "name": "first_chunk_timestamp",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "last_transcribed_at": {
++          "name": "last_transcribed_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "first_transcript_at": {
++          "name": "first_transcript_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "sort_at": {
++          "name": "sort_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "project_id": {
++          "name": "project_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "custom_vocabulary": {
++          "name": "custom_vocabulary",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "meetings_event_id_idx": {
++          "name": "meetings_event_id_idx",
++          "columns": [
++            "event_id"
++          ],
++          "isUnique": false
++        },
++        "meetings_ended_at_idx": {
++          "name": "meetings_ended_at_idx",
++          "columns": [
++            "ended_at"
++          ],
++          "isUnique": false
++        },
++        "meetings_updated_at_id_idx": {
++          "name": "meetings_updated_at_id_idx",
++          "columns": [
++            "updated_at",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "meetings_sort_at_id_idx": {
++          "name": "meetings_sort_at_id_idx",
++          "columns": [
++            "sort_at",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "meetings_created_at_idx": {
++          "name": "meetings_created_at_idx",
++          "columns": [
++            "created_at"
++          ],
++          "isUnique": false
++        },
++        "meetings_updated_at_idx": {
++          "name": "meetings_updated_at_idx",
++          "columns": [
++            "updated_at"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "messages": {
++      "name": "messages",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "deleted_at": {
++          "name": "deleted_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "sync_id": {
++          "name": "sync_id",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "role": {
++          "name": "role",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "content": {
++          "name": "content",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "thinking_content": {
++          "name": "thinking_content",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "hidden_content": {
++          "name": "hidden_content",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "mode": {
++          "name": "mode",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "modalities_used": {
++          "name": "modalities_used",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "agent": {
++          "name": "agent",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "todo_results": {
++          "name": "todo_results",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "file_ids": {
++          "name": "file_ids",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "sources": {
++          "name": "sources",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "messages_thread_id_idx": {
++          "name": "messages_thread_id_idx",
++          "columns": [
++            "thread_id"
++          ],
++          "isUnique": false
++        },
++        "messages_status_idx": {
++          "name": "messages_status_idx",
++          "columns": [
++            "status"
++          ],
++          "isUnique": false
++        },
++        "messages_thread_created_at_idx": {
++          "name": "messages_thread_created_at_idx",
++          "columns": [
++            "thread_id",
++            "created_at"
++          ],
++          "isUnique": false
++        },
++        "messages_thread_created_at_id_idx": {
++          "name": "messages_thread_created_at_id_idx",
++          "columns": [
++            "thread_id",
++            "created_at",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "messages_created_at_idx": {
++          "name": "messages_created_at_idx",
++          "columns": [
++            "created_at"
++          ],
++          "isUnique": false
++        },
++        "messages_updated_at_idx": {
++          "name": "messages_updated_at_idx",
++          "columns": [
++            "updated_at"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {
++        "messages_thread_id_threads_id_fk": {
++          "name": "messages_thread_id_threads_id_fk",
++          "tableFrom": "messages",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "metadata": {
++      "name": "metadata",
++      "columns": {
++        "key": {
++          "name": "key",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "value": {
++          "name": "value",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "_partial_indexes": {
++      "name": "_partial_indexes",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "table": {
++          "name": "table",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "index_name": {
++          "name": "index_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "value": {
++          "name": "value",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "first_sync_id": {
++          "name": "first_sync_id",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 0
++        }
++      },
++      "indexes": {
++        "partial_indexes_table_idx": {
++          "name": "partial_indexes_table_idx",
++          "columns": [
++            "table"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "projects": {
++      "name": "projects",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "deleted_at": {
++          "name": "deleted_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "sync_id": {
++          "name": "sync_id",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "instructions": {
++          "name": "instructions",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "starred": {
++          "name": "starred",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": false
++        },
++        "limit_chat_context_to_project": {
++          "name": "limit_chat_context_to_project",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": true
++        },
++        "ownership_scope": {
++          "name": "ownership_scope",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'personal'"
++        },
++        "visibility": {
++          "name": "visibility",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'private'"
++        },
++        "effective_role": {
++          "name": "effective_role",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "access_source": {
++          "name": "access_source",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "capabilities": {
++          "name": "capabilities",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'{}'"
++        },
++        "version": {
++          "name": "version",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 1
++        }
++      },
++      "indexes": {
++        "projects_updated_at_id_idx": {
++          "name": "projects_updated_at_id_idx",
++          "columns": [
++            "updated_at",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "projects_created_at_idx": {
++          "name": "projects_created_at_idx",
++          "columns": [
++            "created_at"
++          ],
++          "isUnique": false
++        },
++        "projects_updated_at_idx": {
++          "name": "projects_updated_at_idx",
++          "columns": [
++            "updated_at"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "_sync_actions": {
++      "name": "_sync_actions",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "sync_id": {
++          "name": "sync_id",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "applied_at": {
++          "name": "applied_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "packet_count": {
++          "name": "packet_count",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 0
++        }
++      },
++      "indexes": {
++        "sync_actions_sync_id_idx": {
++          "name": "sync_actions_sync_id_idx",
++          "columns": [
++            "sync_id"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "threads": {
++      "name": "threads",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "deleted_at": {
++          "name": "deleted_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "sync_id": {
++          "name": "sync_id",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "last_message_at": {
++          "name": "last_message_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "starred": {
++          "name": "starred",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": false
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "model": {
++          "name": "model",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "last_message_id": {
++          "name": "last_message_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "error_message": {
++          "name": "error_message",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "synced": {
++          "name": "synced",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": false
++        },
++        "project_id": {
++          "name": "project_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "threads_status_idx": {
++          "name": "threads_status_idx",
++          "columns": [
++            "status"
++          ],
++          "isUnique": false
++        },
++        "threads_starred_idx": {
++          "name": "threads_starred_idx",
++          "columns": [
++            "starred"
++          ],
++          "isUnique": false
++        },
++        "threads_starred_updated_at_idx": {
++          "name": "threads_starred_updated_at_idx",
++          "columns": [
++            "starred",
++            "updated_at"
++          ],
++          "isUnique": false
++        },
++        "threads_updated_at_id_idx": {
++          "name": "threads_updated_at_id_idx",
++          "columns": [
++            "updated_at",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "threads_created_at_idx": {
++          "name": "threads_created_at_idx",
++          "columns": [
++            "created_at"
++          ],
++          "isUnique": false
++        },
++        "threads_updated_at_idx": {
++          "name": "threads_updated_at_idx",
++          "columns": [
++            "updated_at"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "_transactions": {
++      "name": "_transactions",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "table": {
++          "name": "table",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "op": {
++          "name": "op",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "model_id": {
++          "name": "model_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "payload": {
++          "name": "payload",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "snapshot": {
++          "name": "snapshot",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "state": {
++          "name": "state",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "sync_id_needed": {
++          "name": "sync_id_needed",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "attempt": {
++          "name": "attempt",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 0
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "transactions_table_idx": {
++          "name": "transactions_table_idx",
++          "columns": [
++            "table"
++          ],
++          "isUnique": false
++        },
++        "transactions_state_idx": {
++          "name": "transactions_state_idx",
++          "columns": [
++            "state"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "user_configs": {
++      "name": "user_configs",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "deleted_at": {
++          "name": "deleted_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "sync_id": {
++          "name": "sync_id",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "meetings": {
++          "name": "meetings",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'{}'"
++        },
++        "menubar": {
++          "name": "menubar",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'{}'"
++        },
++        "calendar": {
++          "name": "calendar",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'{}'"
++        },
++        "chat": {
++          "name": "chat",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'{}'"
++        },
++        "privacy": {
++          "name": "privacy",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'{}'"
++        },
++        "notifications": {
++          "name": "notifications",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'{}'"
++        }
++      },
++      "indexes": {
++        "user_configs_updated_at_id_idx": {
++          "name": "user_configs_updated_at_id_idx",
++          "columns": [
++            "updated_at",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "user_configs_created_at_idx": {
++          "name": "user_configs_created_at_idx",
++          "columns": [
++            "created_at"
++          ],
++          "isUnique": false
++        },
++        "user_configs_updated_at_idx": {
++          "name": "user_configs_updated_at_idx",
++          "columns": [
++            "updated_at"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    }
++  },
++  "views": {},
++  "enums": {},
++  "_meta": {
++    "schemas": {},
++    "tables": {},
++    "columns": {}
++  },
++  "internal": {
++    "indexes": {}
++  }
++}
+diff --git a/apps/mobile/db/drizzle/meta/_journal.json b/apps/mobile/db/drizzle/meta/_journal.json
+index 7a67069887c..3616351cbcc 100644
+--- a/apps/mobile/db/drizzle/meta/_journal.json
++++ b/apps/mobile/db/drizzle/meta/_journal.json
+@@ -190,6 +190,13 @@
+       "when": 1786032793865,
+       "tag": "0026_funny_jasper_sitwell",
+       "breakpoints": true
++    },
++    {
++      "idx": 27,
++      "version": "6",
++      "when": 1784284842335,
++      "tag": "0027_shared_project_catalog",
++      "breakpoints": true
+     }
+   ]
+-}
+\ No newline at end of file
++}
+diff --git a/apps/mobile/db/drizzle/migrations.js b/apps/mobile/db/drizzle/migrations.js
+index 42254b6fec1..95166778e37 100644
+--- a/apps/mobile/db/drizzle/migrations.js
++++ b/apps/mobile/db/drizzle/migrations.js
+@@ -28,6 +28,7 @@ import m0023 from './0023_smiling_iron_patriot.sql';
+ import m0024 from './0024_backfill_mcp_client_grants.sql';
+ import m0025 from './0025_goofy_marrow.sql';
+ import m0026 from './0026_funny_jasper_sitwell.sql';
++import m0027 from './0027_shared_project_catalog.sql';
+ 
+   export default {
+     journal,
+@@ -58,7 +59,7 @@ m0022,
+ m0023,
+ m0024,
+ m0025,
+-m0026
++m0026,
++m0027
+     }
+   }
+-  
+\ No newline at end of file
+diff --git a/apps/mobile/db/schema.test.ts b/apps/mobile/db/schema.test.ts
+index 45c2c7d3122..6423cd9f4cc 100644
+--- a/apps/mobile/db/schema.test.ts
++++ b/apps/mobile/db/schema.test.ts
+@@ -17,6 +17,10 @@ describe('projects schema', () => {
+     expect(columns).toContain('instructions');
+     expect(columns).toContain('starred');
+     expect(columns).toContain('name');
++    expect(columns).toContain('limitChatContextToProject');
++    expect(columns).toContain('ownershipScope');
++    expect(columns).toContain('visibility');
++    expect(columns).toContain('version');
+   });
+ 
+   it('does not keep the unused legacy shared column', () => {
+diff --git a/apps/mobile/db/schema.ts b/apps/mobile/db/schema.ts
+index 82926e49d45..b3ea678450a 100644
+--- a/apps/mobile/db/schema.ts
++++ b/apps/mobile/db/schema.ts
+@@ -247,6 +247,19 @@ export const projects = sqliteTable(
+     name: text('name'),
+     instructions: text('instructions'),
+     starred: integer('starred', { mode: 'boolean' }).default(false).notNull(),
++    limitChatContextToProject: integer('limit_chat_context_to_project', {
++      mode: 'boolean',
++    })
++      .default(true)
++      .notNull(),
++    ownershipScope: text('ownership_scope').default('personal').notNull(),
++    visibility: text('visibility').default('private').notNull(),
++    effectiveRole: text('effective_role'),
++    accessSource: text('access_source'),
++    capabilities: text('capabilities', { mode: 'json' })
++      .default('{}')
++      .notNull(),
++    version: integer('version').default(1).notNull(),
+   },
+   (table) => [
+     index('projects_updated_at_id_idx').on(table.updatedAt, table.id),
+diff --git a/backend/lb/features/projects/project_list_service.py b/backend/lb/features/projects/project_list_service.py
+new file mode 100644
+index 00000000000..026f752814b
+--- /dev/null
++++ b/backend/lb/features/projects/project_list_service.py
+@@ -0,0 +1,96 @@
++"""Builds the content-accessible project list (the set of projects a user can access)."""
++
++from uuid import UUID
++
++from lb.db.models import Project, ProjectUserState, TeamMembership
++from lb.features.projects.project_access_service import (
++    ProjectAccess,
++    project_access_service,
++)
++from lb.features.projects.projects_schemas import (
++    ProjectCapabilities,
++    ProjectResource,
++)
++
++
++def resource_from_access(access: ProjectAccess, starred: bool) -> ProjectResource:
++    return ProjectResource(
++        id=access.project.id,
++        name=access.project.name,
++        instructions=access.project.instructions,
++        ownership_scope=access.ownership_scope.value,
++        visibility=access.project.visibility,
++        effective_role=access.role.value,
++        access_source=access.access_source.value,
++        capabilities=ProjectCapabilities(
++            can_view_content=True,
++            can_edit_content=access.can_edit_content,
++            can_manage_members=access.can_manage_members,
++            can_change_visibility=access.can_change_visibility,
++            can_delete=access.can_delete,
++            can_publish_own_snapshots=True,
++        ),
++        starred=starred,
++        limit_chat_context_to_project=access.project.limit_chat_context_to_project,
++        version=access.project.version,
++        created_at=access.project.created_at,
++        updated_at=access.project.updated_at,
++    )
++
++
++async def get_resource(requester_id: int, project_id: UUID) -> ProjectResource | None:
++    access = await project_access_service.resolve_content_access(requester_id, project_id)
++    if access is None:
++        return None
++    starred_by_id = await resolve_starred_bulk(requester_id, [access.project])
++    return resource_from_access(access, starred_by_id.get(access.project.id, False))
++
++
++async def list_projects(requester_id: int) -> list[ProjectResource]:
++    candidate_ids = await _candidate_project_ids(requester_id)
++    if not candidate_ids:
++        return []
++
++    access_by_id = await project_access_service.resolve_content_access_bulk(requester_id, candidate_ids)
++    if not access_by_id:
++        return []
++
++    starred_by_id = await resolve_starred_bulk(requester_id, [a.project for a in access_by_id.values()])
++
++    return [
++        resource_from_access(access, starred_by_id.get(access.project.id, False)) for access in access_by_id.values()
++    ]
++
++
++async def resolve_starred_bulk(requester_id: int, projects: list[Project]) -> dict[UUID, bool]:
++    """Batched starred resolution: ProjectUserState first, else legacy Project.starred for owners."""
++    project_ids = [p.id for p in projects]
++    starred_from_state: dict[UUID, bool] = {}
++    if project_ids:
++        async for pid, starred in ProjectUserState.objects.filter(
++            project_id__in=project_ids, user_id=requester_id
++        ).values_list("project_id", "starred"):
++            starred_from_state[pid] = starred
++
++    result: dict[UUID, bool] = {}
++    for project in projects:
++        if project.id in starred_from_state:
++            result[project.id] = starred_from_state[project.id]
++        elif project.user_id == requester_id:
++            result[project.id] = project.starred
++        else:
++            result[project.id] = False
++    return result
++
++
++async def _candidate_project_ids(requester_id: int) -> list[UUID]:
++    active_team_ids = [
++        tid
++        async for tid in TeamMembership.objects.filter(
++            user_id=requester_id, status=TeamMembership.Status.ACTIVE
++        ).values_list("team_id", flat=True)
++    ]
++    personal = Project.objects.filter(owner_user_id=requester_id, deleted_at__isnull=True)
++    team_owned = Project.objects.filter(owner_team_id__in=active_team_ids, deleted_at__isnull=True)
++    explicit = Project.objects.filter(memberships__user_id=requester_id, deleted_at__isnull=True)
++    return [pid async for pid in (personal | team_owned | explicit).values_list("id", flat=True).distinct()]
+diff --git a/backend/lb/features/projects/projects_router.py b/backend/lb/features/projects/projects_router.py
+index 1290d0fecd1..b9f06c4e4b5 100644
+--- a/backend/lb/features/projects/projects_router.py
++++ b/backend/lb/features/projects/projects_router.py
+@@ -3,10 +3,12 @@
+ 
+ from asgiref.sync import sync_to_async
+ from django.utils import timezone
+-from fastapi import APIRouter, HTTPException
++from fastapi import APIRouter, Header, HTTPException
+ 
+-from lb.db.models import Project
++from lb.db.models import Project, ProjectUserState
+ from lb.db.safe_models import gProject
++from lb.features.projects import project_list_service
++from lb.features.projects.project_access_service import project_access_service
+ from lb.features.projects.projects_agent_slug import resolve_unique_project_agent_slug
+ from lb.features.projects.projects_helpers import (
+     clear_project_assignments_and_soft_delete,
+@@ -14,7 +16,10 @@
+ )
+ from lb.features.projects.projects_schemas import (
+     CreateProjectPayload,
++    ProjectListResponse,
++    ProjectResource,
+     ProjectSchema,
++    ProjectUserStatePayload,
+     UpdateProjectPayload,
+ )
+ from lb.features.sync.sync_id_manager import SyncIdManager
+@@ -24,11 +29,29 @@
+ router = APIRouter()
+ 
+ 
++async def _check_version(project: Project, user_id: int, expected_version: int | None) -> None:
++    if expected_version is not None and project.version != expected_version:
++        canonical = await project_list_service.get_resource(user_id, project.id)
++        raise HTTPException(
++            status_code=409,
++            detail={
++                "user_error_message": "Project version conflict",
++                "canonical_resource": canonical.model_dump(mode="json") if canonical else None,
++            },
++        )
++
++
++@router.get("/projects", response_model=ProjectListResponse)
++async def list_projects(user: CurrentUserDep) -> ProjectListResponse:
++    resources = await project_list_service.list_projects(user.id)
++    return ProjectListResponse(projects=resources)
++
++
+ @router.post("/projects")
+ async def create_project(payload: CreateProjectPayload, user: CurrentUserDep) -> ProjectSchema:
+     if payload.id is not None:
+         existing = await Project.objects.filter(
+-            user_id=user.id,
++            owner_user_id=user.id,
+             id=payload.id,
+             deleted_at__isnull=True,
+         ).afirst()
+@@ -39,7 +62,7 @@ async def create_project(payload: CreateProjectPayload, user: CurrentUserDep) ->
+         project: Project
+         if payload.id is not None:
+             deleted_project = await Project.objects.filter(
+-                user_id=user.id,
++                owner_user_id=user.id,
+                 id=payload.id,
+                 deleted_at__isnull=False,
+             ).afirst()
+@@ -49,7 +72,6 @@ async def create_project(payload: CreateProjectPayload, user: CurrentUserDep) ->
+                 deleted_project.limit_chat_context_to_project = payload.limit_chat_context_to_project
+                 deleted_project.deleted_at = None
+                 deleted_project.sync_id = sync_id
+-                # agent_slug is frozen at first creation; restore keeps the original.
+                 if not deleted_project.agent_slug:
+                     deleted_project.agent_slug = await resolve_unique_project_agent_slug(
+                         user.id,
+@@ -72,6 +94,8 @@ async def create_project(payload: CreateProjectPayload, user: CurrentUserDep) ->
+                 agent_slug = await resolve_unique_project_agent_slug(user.id, payload.name)
+                 create_kwargs: dict[str, Any] = {
+                     "user_id": user.id,
++                    "owner_user_id": user.id,
++                    "created_by_id": user.id,
+                     "name": payload.name,
+                     "instructions": payload.instructions,
+                     "limit_chat_context_to_project": payload.limit_chat_context_to_project,
+@@ -84,6 +108,8 @@ async def create_project(payload: CreateProjectPayload, user: CurrentUserDep) ->
+             agent_slug = await resolve_unique_project_agent_slug(user.id, payload.name)
+             project = await Project.objects.acreate(
+                 user_id=user.id,
++                owner_user_id=user.id,
++                created_by_id=user.id,
+                 name=payload.name,
+                 instructions=payload.instructions,
+                 limit_chat_context_to_project=payload.limit_chat_context_to_project,
+@@ -95,11 +121,20 @@ async def create_project(payload: CreateProjectPayload, user: CurrentUserDep) ->
+     return project_to_schema(project)
+ 
+ 
++@router.get("/projects/{project_id}")
++async def get_project(project_id: UUID, user: CurrentUserDep) -> ProjectResource:
++    resource = await project_list_service.get_resource(user.id, project_id)
++    if resource is None:
++        raise HTTPException(status_code=404, detail={"user_error_message": "Project not found"})
++    return resource
++
++
+ @router.patch("/projects/{project_id}")
+ async def update_project(
+     project_id: UUID,
+     payload: UpdateProjectPayload,
+     user: CurrentUserDep,
++    expected_version: int | None = Header(default=None, alias="x-expected-version"),
+ ) -> ProjectSchema:
+     project = await gProject(user.id, project_id)
+     if project is None:
+@@ -108,6 +143,8 @@ async def update_project(
+             detail={"user_error_message": "Project not found"},
+         )
+ 
++    await _check_version(project, user.id, expected_version)
++
+     changed_fields: list[str] = []
+     if payload.name and project.name != payload.name:
+         project.name = payload.name
+@@ -116,8 +153,10 @@ async def update_project(
+         project.instructions = payload.instructions
+         changed_fields.append("instructions")
+     if payload.starred is not None and project.starred != payload.starred:
++        # Compat: legacy PATCH writes ProjectUserState and mirrors Project.starred for sync clients.
+         project.starred = payload.starred
+         changed_fields.append("starred")
++        await _bridge_starred_to_user_state(user.id, project_id, payload.starred)
+     if (
+         payload.limit_chat_context_to_project is not None
+         and project.limit_chat_context_to_project != payload.limit_chat_context_to_project
+@@ -130,19 +169,27 @@ async def update_project(
+ 
+     async with SyncIdManager.aget_next_sync_id(user.id) as sync_id:
+         project.sync_id = sync_id
+-        await project.asave(update_fields=changed_fields + ["sync_id", "updated_at"])
++        project.version += 1
++        await project.asave(update_fields=changed_fields + ["sync_id", "version", "updated_at"])
+ 
+     return project_to_schema(project)
+ 
+ 
+ @router.delete("/projects/{project_id}")
+-async def delete_project(project_id: UUID, user: CurrentUserDep) -> ProjectSchema:
+-    if await gProject(user.id, project_id) is None:
++async def delete_project(
++    project_id: UUID,
++    user: CurrentUserDep,
++    expected_version: int | None = Header(default=None, alias="x-expected-version"),
++) -> ProjectSchema:
++    project = await gProject(user.id, project_id)
++    if project is None:
+         raise HTTPException(
+             status_code=404,
+             detail={"user_error_message": "Project not found"},
+         )
+ 
++    await _check_version(project, user.id, expected_version)
++
+     async with SyncIdManager.aget_next_sync_id(user.id) as sync_id:
+         now = timezone.now()
+         project = await sync_to_async(clear_project_assignments_and_soft_delete)(
+@@ -160,3 +207,34 @@ async def delete_project(project_id: UUID, user: CurrentUserDep) -> ProjectSchem
+ 
+     logger.info(f"Soft-deleted project {project_id} for user {user.id}")
+     return project_to_schema(project)
++
++
++@router.put("/projects/{project_id}/user-state")
++async def update_user_state(
++    project_id: UUID,
++    payload: ProjectUserStatePayload,
++    user: CurrentUserDep,
++) -> dict[str, bool]:
++    access = await project_access_service.resolve_content_access(user.id, project_id)
++    if access is None:
++        raise HTTPException(status_code=404, detail={"user_error_message": "Project not found"})
++
++    if payload.starred is not None:
++        await _bridge_starred_to_user_state(user.id, project_id, payload.starred)
++    if payload.last_opened_at is not None:
++        await ProjectUserState.objects.aupdate_or_create(
++            project_id=project_id,
++            user_id=user.id,
++            defaults={"last_opened_at": payload.last_opened_at},
++        )
++
++    return {"ok": True}
++
++
++async def _bridge_starred_to_user_state(user_id: int, project_id: UUID, starred: bool) -> None:
++    await ProjectUserState.objects.aupdate_or_create(
++        project_id=project_id,
++        user_id=user_id,
++        defaults={"starred": starred},
++    )
++    await Project.objects.filter(user_id=user_id, id=project_id).aupdate(starred=starred)
+diff --git a/backend/lb/features/projects/projects_schemas.py b/backend/lb/features/projects/projects_schemas.py
+index 75e6b67a794..b8bd7e57653 100644
+--- a/backend/lb/features/projects/projects_schemas.py
++++ b/backend/lb/features/projects/projects_schemas.py
+@@ -2,7 +2,8 @@
+ from typing import Any
+ from uuid import UUID
+ 
+-from pydantic import BaseModel, Field, field_validator
++from pydantic import BaseModel, ConfigDict, Field, field_validator
++from pydantic.alias_generators import to_camel
+ 
+ PROJECT_NAME_MAX_LENGTH = 255
+ 
+@@ -59,3 +60,41 @@ class ProjectSchema(BaseModel):
+     created_at: datetime
+     updated_at: datetime
+     deleted_at: datetime | None = None
++
++
++class ProjectCapabilities(BaseModel):
++    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
++
++    can_view_content: bool
++    can_edit_content: bool
++    can_manage_members: bool
++    can_change_visibility: bool
++    can_delete: bool
++    can_publish_own_snapshots: bool
++
++
++class ProjectResource(BaseModel):
++    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
++
++    id: UUID
++    name: str
++    instructions: str | None = None
++    ownership_scope: str
++    visibility: str
++    effective_role: str | None = None
++    access_source: str | None = None
++    capabilities: ProjectCapabilities
++    starred: bool = False
++    limit_chat_context_to_project: bool = True
++    version: int = 1
++    created_at: datetime
++    updated_at: datetime
++
++
++class ProjectUserStatePayload(BaseModel):
++    starred: bool | None = None
++    last_opened_at: datetime | None = None
++
++
++class ProjectListResponse(BaseModel):
++    projects: list[ProjectResource]
+diff --git a/backend/lb/features/projects/tests/test_project_list.py b/backend/lb/features/projects/tests/test_project_list.py
+new file mode 100644
+index 00000000000..1a9d35f2376
+--- /dev/null
++++ b/backend/lb/features/projects/tests/test_project_list.py
+@@ -0,0 +1,178 @@
++"""REST project list: GET /projects, version conflicts, user-state."""
++
++import os
++import uuid
++
++import pytest
++import pytest_asyncio
++from fastapi.testclient import TestClient
++
++from lb.db.models import AppUser, Project, ProjectUserState
++from lb.features.user.user_router import generate_personal_access_token
++from tests.testing_utils import create_testing_app
++
++app = create_testing_app()
++
++
++@pytest.fixture(autouse=True)
++def setup_test_env():
++    os.environ["PERSONAL_TOKEN_SECRET"] = "test_secret_key"
++    yield
++    os.environ.pop("PERSONAL_TOKEN_SECRET", None)
++
++
++@pytest.fixture
++def client():
++    return TestClient(app)
++
++
++@pytest_asyncio.fixture
++async def list_user():
++    user = AppUser(email="list@example.com", token="list_tok", sub="list_sub")
++    await user.asave()
++    yield user
++    await ProjectUserState.objects.filter(user=user).adelete()
++    await Project.objects.filter(owner_user=user).adelete()
++    await user.adelete()
++
++
++@pytest_asyncio.fixture
++async def other_user():
++    user = AppUser(email="other@example.com", token="other_tok", sub="other_sub")
++    await user.asave()
++    yield user
++    await Project.objects.filter(owner_user=user).adelete()
++    await user.adelete()
++
++
++def _auth_headers(user: AppUser) -> dict[str, str]:
++    token = generate_personal_access_token(email=user.email, sub=str(user.sub))
++    return {"Authorization": f"Bearer {token}"}
++
++
++async def _make_personal_project(owner: AppUser, name: str = "My Project") -> Project:
++    return await Project.objects.acreate(
++        user=owner,
++        name=name,
++        agent_slug=name.lower().replace(" ", "-"),
++        sync_id=1,
++    )
++
++
++# ── Project list ──────────────────────────────────────────────────────
++
++
++@pytest.mark.asyncio
++async def test_list_returns_personal_projects(client, list_user):
++    project = await _make_personal_project(list_user, "Roadmap")
++
++    response = client.get("/projects", headers=_auth_headers(list_user))
++    assert response.status_code == 200, response.text
++    body = response.json()
++    assert len(body["projects"]) == 1
++    res = body["projects"][0]
++    assert res["id"] == str(project.id)
++    assert res["name"] == "Roadmap"
++    assert res["ownershipScope"] == "personal"
++    assert res["visibility"] == "private"
++    assert res["effectiveRole"] == "editor"
++    assert res["accessSource"] == "owner"
++    assert res["capabilities"]["canEditContent"] is True
++    assert res["capabilities"]["canDelete"] is True
++    assert res["capabilities"]["canViewContent"] is True
++    assert res["version"] == 1
++
++
++@pytest.mark.asyncio
++async def test_list_excludes_other_users_projects(client, list_user, other_user):
++    await _make_personal_project(list_user, "Mine")
++    await _make_personal_project(other_user, "Theirs")
++
++    response = client.get("/projects", headers=_auth_headers(list_user))
++    assert response.status_code == 200
++    ids = [p["id"] for p in response.json()["projects"]]
++    assert len(ids) == 1
++
++
++@pytest.mark.asyncio
++async def test_get_single_project_returns_resource(client, list_user):
++    project = await _make_personal_project(list_user, "Single")
++
++    response = client.get(f"/projects/{project.id}", headers=_auth_headers(list_user))
++    assert response.status_code == 200, response.text
++    assert response.json()["id"] == str(project.id)
++    assert response.json()["ownershipScope"] == "personal"
++
++
++@pytest.mark.asyncio
++async def test_get_single_project_404_for_nonexistent(client, list_user):
++    response = client.get(f"/projects/{uuid.uuid4()}", headers=_auth_headers(list_user))
++    assert response.status_code == 404
++
++
++@pytest.mark.asyncio
++async def test_patch_with_stale_expected_version_returns_409(client, list_user):
++    project = await _make_personal_project(list_user, "Conflicted")
++    stale = project.version
++
++    ok = client.patch(
++        f"/projects/{project.id}",
++        json={"name": "Updated"},
++        headers={**_auth_headers(list_user), "x-expected-version": str(stale)},
++    )
++    assert ok.status_code == 200
++
++    conflict = client.patch(
++        f"/projects/{project.id}",
++        json={"name": "Stale"},
++        headers={**_auth_headers(list_user), "x-expected-version": str(stale)},
++    )
++    assert conflict.status_code == 409
++
++
++@pytest.mark.asyncio
++async def test_patch_without_expected_version_succeeds(client, list_user):
++    project = await _make_personal_project(list_user, "No Guard")
++
++    response = client.patch(
++        f"/projects/{project.id}",
++        json={"name": "Renamed"},
++        headers=_auth_headers(list_user),
++    )
++    assert response.status_code == 200
++    assert response.json()["name"] == "Renamed"
++
++
++# ── User state ────────────────────────────────────────────────────────
++
++
++@pytest.mark.asyncio
++async def test_put_user_state_stars_project(client, list_user):
++    project = await _make_personal_project(list_user, "Starable")
++
++    response = client.put(
++        f"/projects/{project.id}/user-state",
++        json={"starred": True},
++        headers=_auth_headers(list_user),
++    )
++    assert response.status_code == 200, response.text
++
++    state = await ProjectUserState.objects.aget(project_id=project.id, user_id=list_user.id)
++    assert state.starred is True
++
++    # Project list reflects the starred state.
++    project_list = client.get("/projects", headers=_auth_headers(list_user))
++    res = [p for p in project_list.json()["projects"] if p["id"] == str(project.id)][0]
++    assert res["starred"] is True
++
++
++@pytest.mark.asyncio
++async def test_put_user_state_404_for_inaccessible(client, list_user, other_user):
++    project = await _make_personal_project(other_user, "Private")
++
++    response = client.put(
++        f"/projects/{project.id}/user-state",
++        json={"starred": True},
++        headers=_auth_headers(list_user),
++    )
++    assert response.status_code == 404
+diff --git a/backend/lb/features/sync/sync_capabilities.py b/backend/lb/features/sync/sync_capabilities.py
+index 5f8d4fbcc26..ec285532a29 100644
+--- a/backend/lb/features/sync/sync_capabilities.py
++++ b/backend/lb/features/sync/sync_capabilities.py
+@@ -10,6 +10,7 @@ class SyncClientCapabilities:
+     include_projects: bool
+     include_user_configs: bool
+     legacy_empty_todos_categories: bool
++    shared_projects_rest: bool
+ 
+     @classmethod
+     def from_client_version(cls, client_version: ClientVersion | None) -> SyncClientCapabilities:
+@@ -18,9 +19,11 @@ def from_client_version(cls, client_version: ClientVersion | None) -> SyncClient
+                 include_projects=False,
+                 include_user_configs=False,
+                 legacy_empty_todos_categories=True,
++                shared_projects_rest=False,
+             )
+         return cls(
+             include_projects=client_version.is_at_least(Versions.USER_PROJECTS_SYNC),
+             include_user_configs=client_version.is_at_least(Versions.USER_CONFIG_SYNC),
+             legacy_empty_todos_categories=not client_version.is_at_least(Versions.TODOS_CATEGORIES_REMOVED),
++            shared_projects_rest=client_version.is_at_least(Versions.SHARED_PROJECTS_REST),
+         )
+diff --git a/backend/lb/features/sync/sync_entities.py b/backend/lb/features/sync/sync_entities.py
+index 5ca770f04f9..fc912f507d1 100644
+--- a/backend/lb/features/sync/sync_entities.py
++++ b/backend/lb/features/sync/sync_entities.py
+@@ -122,6 +122,12 @@ def supports_user_projects(client_version: ClientVersion | None) -> bool:
+     return SyncClientCapabilities.from_client_version(client_version).include_projects
+ 
+ 
++def uses_legacy_project_sync(client_version: ClientVersion | None) -> bool:
++    """True when projects still come from the bootstrap cursor (pre-REST catalog)."""
++    caps = SyncClientCapabilities.from_client_version(client_version)
++    return caps.include_projects and not caps.shared_projects_rest
++
++
+ def supports_user_config_sync(client_version: ClientVersion | None) -> bool:
+     return SyncClientCapabilities.from_client_version(client_version).include_user_configs
+ 
+@@ -140,7 +146,7 @@ def create_empty_response(server_sync_id: SyncId, client_version: ClientVersion
+         "mcp_client_grants": [],
+         "_meta": {"last_sync_id": server_sync_id},
+     }
+-    if supports_user_projects(client_version):
++    if uses_legacy_project_sync(client_version):
+         response["projects"] = []
+     if supports_user_config_sync(client_version):
+         response["user_configs"] = []
+@@ -510,7 +516,7 @@ class SyncEntity:
+     build_query=_build_project_query,
+     map_row=map_project_to_dict,
+     count_span_attr=SpanAttrs.SYNC_PROJECTS_COUNT,
+-    included_for=supports_user_projects,
++    included_for=uses_legacy_project_sync,
+ )
+ _USER_CONFIGS = SyncEntity(
+     name="user_configs",
+diff --git a/backend/lb/features/sync/tests/test_sync_bootstrap_orchestration.py b/backend/lb/features/sync/tests/test_sync_bootstrap_orchestration.py
+index 8edb9e34739..c5e00c11742 100644
+--- a/backend/lb/features/sync/tests/test_sync_bootstrap_orchestration.py
++++ b/backend/lb/features/sync/tests/test_sync_bootstrap_orchestration.py
+@@ -165,7 +165,9 @@ async def test_old_client_context_gates_projects_and_user_configs() -> None:
+ async def test_new_client_context_includes_projects_and_user_configs() -> None:
+     user = await AppUser.objects.acreate(email=f"ctx-new-{uuid.uuid4()}@example.com")
+     try:
+-        ctx = _build_bootstrap_context(user, ClientVersion("99.0.0"), server_sync_id=100)
++        # 0.83.x supports project sync but predates SHARED_PROJECTS_REST (0.84.0),
++        # so projects are still delivered through the bootstrap cursor.
++        ctx = _build_bootstrap_context(user, ClientVersion("0.83.0"), server_sync_id=100)
+ 
+         assert ctx.version_gated_entities == ()
+         assert ctx.legacy_empty_lines == ()
+@@ -179,6 +181,18 @@ async def test_new_client_context_includes_projects_and_user_configs() -> None:
+         await user.adelete()
+ 
+ 
++@pytest.mark.asyncio
++async def test_rest_capable_client_excludes_projects_from_bootstrap() -> None:
++    user = await AppUser.objects.acreate(email=f"ctx-rest-{uuid.uuid4()}@example.com")
++    try:
++        ctx = _build_bootstrap_context(user, ClientVersion("99.0.0"), server_sync_id=100)
++
++        assert "projects" not in ctx.empty_response_line_order
++        assert "projects" not in ctx.paged_line_order
++    finally:
++        await user.adelete()
++
++
+ @pytest.mark.asyncio
+ async def test_normal_bootstrap_emits_chunks_legacy_lines_and_meta() -> None:
+     user = await AppUser.objects.acreate(email=f"orch-{uuid.uuid4()}@example.com")
+diff --git a/backend/lb/utils/versioning.py b/backend/lb/utils/versioning.py
+index 3155523ac9e..bf4283b3794 100644
+--- a/backend/lb/utils/versioning.py
++++ b/backend/lb/utils/versioning.py
+@@ -31,6 +31,10 @@ class Versions:
+     # 0.82.x build predates it.
+     CANCELLED_CONNECTION_STATUS = "0.83.0"  # First desktop/web version whose account schema accepts 'cancelled'
+ 
++    # First version where the client treats GET /projects as the authoritative catalog,
++    # sends project-domain mutations through REST, and ignores project rows in bootstrap.
++    SHARED_PROJECTS_REST = "0.84.0"
++
+ 
+ PLATFORMS = str | Literal["web", "ios", "android", "desktop", "mobile"]  # keeping `mobile` for backward compatibility
+ 
+diff --git a/packages/sdk/__tests__/schema-versioning.test.ts b/packages/sdk/__tests__/schema-versioning.test.ts
+index a768fab2747..fbeb26dadcc 100644
+--- a/packages/sdk/__tests__/schema-versioning.test.ts
++++ b/packages/sdk/__tests__/schema-versioning.test.ts
+@@ -50,7 +50,7 @@ describe('RootStore.migrateSchemaVersions', () => {
+         files: 1,
+         journals: 1,
+         meetings: 1,
+-        projects: 1,
++        projects: 2,
+         arenas: 1,
+       },
+     });
+@@ -74,7 +74,7 @@ describe('RootStore.migrateSchemaVersions', () => {
+         files: 1,
+         journals: 1,
+         meetings: 1,
+-        projects: 1,
++        projects: 2,
+         arenas: 1,
+       },
+     });
+@@ -111,7 +111,7 @@ describe('RootStore.migrateSchemaVersions', () => {
+         files: 1,
+         journals: 1,
+         meetings: 1,
+-        projects: 1,
++        projects: 2,
+         arenas: 1,
+       },
+     });
+diff --git a/packages/sdk/__tests__/stores/project-store.test.ts b/packages/sdk/__tests__/stores/project-store.test.ts
+index 940465476c6..5472cd08c57 100644
+--- a/packages/sdk/__tests__/stores/project-store.test.ts
++++ b/packages/sdk/__tests__/stores/project-store.test.ts
+@@ -406,3 +406,93 @@ describe('ProjectStore - deleteProject', () => {
+     expect(sdk.stores.meetings.get('m500')?.projectId).toBeNull();
+   });
+ });
++
++describe('ProjectStore - refreshProjects', () => {
++  function createListProject(overrides: Partial<any> = {}) {
++    const now = new Date().toISOString();
++    return {
++      id: `proj-${Math.random().toString(36).slice(2, 9)}`,
++      name: 'List Project',
++      instructions: null,
++      ownershipScope: 'personal' as const,
++      visibility: 'private' as const,
++      effectiveRole: 'editor' as const,
++      accessSource: 'owner' as const,
++      capabilities: {
++        canViewContent: true,
++        canEditContent: true,
++        canManageMembers: false,
++        canChangeVisibility: false,
++        canDelete: true,
++        canPublishOwnSnapshots: true,
++      },
++      starred: false,
++      limitChatContextToProject: true,
++      version: 1,
++      createdAt: now,
++      updatedAt: now,
++      ...overrides,
++    };
++  }
++
++  it('upserts returned resources into memory', async () => {
++    const resource = createListProject({ id: 'p-cat-1', name: 'From REST' });
++    vi.spyOn(sdk.apiClient, 'fetch').mockResolvedValueOnce({
++      projects: [resource],
++    });
++
++    await store.refreshProjects();
++
++    expect(store.getById('p-cat-1')).toBeDefined();
++    expect(store.getById('p-cat-1')!.name).toBe('From REST');
++    expect(store.getById('p-cat-1')!.ownershipScope).toBe('personal');
++    expect(store.getById('p-cat-1')!.version).toBe(1);
++  });
++
++  it('removes projects absent from the authoritative response', async () => {
++    const existing = createListProject({ id: 'p-old', name: 'Old' });
++    vi.spyOn(sdk.apiClient, 'fetch').mockResolvedValueOnce({ projects: [] });
++    store.add({ ...existing, syncId: 0 });
++    expect(store.getById('p-old')).toBeDefined();
++
++    await store.refreshProjects();
++
++    expect(store.getById('p-old')).toBeUndefined();
++  });
++
++  it('surfaces fetch failures and preserves cached projects', async () => {
++    const resource = createListProject({ id: 'p-fail', name: 'Survives' });
++    store.add({ ...resource, syncId: 0 });
++
++    vi.spyOn(sdk.apiClient, 'fetch').mockRejectedValueOnce(
++      new Error('connection refused')
++    );
++
++    // The error must be surfaced, not silently swallowed.
++    await expect(store.refreshProjects()).rejects.toThrow('connection refused');
++    // Local state is intact — a failed fetch is not a deletion.
++    expect(store.getById('p-fail')).toBeDefined();
++  });
++
++  it('stages upserts before removals so a mid-write failure is recoverable', async () => {
++    store.add({ id: 'p-old', name: 'Old', syncId: 0 });
++
++    const resource = createListProject({ id: 'p-new', name: 'New' });
++    const bulkSetSpy = vi
++      .spyOn(sdk.storage, 'bulkSet')
++      .mockResolvedValue(undefined);
++    // Make the removal fail AFTER the set succeeds — upsert must still be applied.
++    vi.spyOn(sdk.storage, 'bulkRemove').mockRejectedValueOnce(
++      new Error('storage corruption')
++    );
++
++    vi.spyOn(sdk.apiClient, 'fetch').mockResolvedValueOnce({
++      projects: [resource],
++    });
++
++    await expect(store.refreshProjects()).rejects.toThrow('storage corruption');
++    // The new project was staged (upsert happened first).
++    expect(bulkSetSpy).toHaveBeenCalled();
++    expect(store.getById('p-new')).toBeDefined();
++  });
++});
+diff --git a/packages/sdk/src/core/sdk.ts b/packages/sdk/src/core/sdk.ts
+index 7a2dbfcd550..e0e59c97438 100644
+--- a/packages/sdk/src/core/sdk.ts
++++ b/packages/sdk/src/core/sdk.ts
+@@ -21,6 +21,7 @@ import { IWebSocketManager, WebsocketManager } from './services/websocket';
+ import { StorageAdapter } from './sync/adapters/storage-adapter';
+ import { ApiClient, NO_BACKOFF, type BackoffConfig } from './sync/api-client';
+ import { BootstrapManager } from './sync/bootstrap-manager';
++import { usesSharedProjectsRest } from './sync/client-capabilities';
+ import { PartialIndexCoverage } from './sync/partial-index-coverage';
+ import { RootStore } from './sync/root-store';
+ import { Store } from './sync/stores/base/store';
+@@ -240,6 +241,7 @@ export class LittlebirdSDK {
+   _error: Error | null = null;
+ 
+   private _initPromise: Promise<void> | null = null;
++  private _usesRestProjectsCache: boolean | null = null;
+ 
+   constructor(options: SdkOptions) {
+     validateOptions(options);
+@@ -679,6 +681,23 @@ export class LittlebirdSDK {
+     return this.bootstrapManager.phase;
+   }
+ 
++  get usesRestProjects(): boolean {
++    return this._usesRestProjectsCache ?? false;
++  }
++
++  async resolveRestProjectsFlag(): Promise<boolean> {
++    if (this._usesRestProjectsCache !== null) {
++      return this._usesRestProjectsCache;
++    }
++    try {
++      const version = await this.options.getVersion();
++      this._usesRestProjectsCache = usesSharedProjectsRest(version);
++    } catch {
++      this._usesRestProjectsCache = false;
++    }
++    return this._usesRestProjectsCache;
++  }
++
+   /**
+    * True when sync has persistently failed due to network/connectivity, so the
+    * UI can surface an actionable indicator (see FE-2245).
+@@ -743,6 +762,7 @@ export class LittlebirdSDK {
+     await this.userConfig.hydrateFromStorage();
+     await this.searchStore.initIndexedState();
+     this.wireTransactionQueue();
++    await this.wireProjectListRefresh();
+     console.info('SDK: Services initialization complete');
+   }
+ 
+@@ -792,6 +812,18 @@ export class LittlebirdSDK {
+       await store.rollback(tx);
+     });
+   }
++
++  private async wireProjectListRefresh(): Promise<void> {
++    const restCapable = await this.resolveRestProjectsFlag();
++    if (!restCapable) return;
++    this.onBootstrap(() => {
++      void this.stores.projects.refreshProjects().catch((error) => {
++        this.logger.error(error as Error, {
++          context: 'SDK:wireProjectListRefresh',
++        });
++      });
++    });
++  }
+ }
+ 
+ function validateOptions(options: SdkOptions): void {
+diff --git a/packages/sdk/src/core/sync/api-client.ts b/packages/sdk/src/core/sync/api-client.ts
+index 4cbb2ed28b2..a1bb18b21a9 100644
+--- a/packages/sdk/src/core/sync/api-client.ts
++++ b/packages/sdk/src/core/sync/api-client.ts
+@@ -19,6 +19,8 @@ import {
+   FreeLimitExceededError,
+   MeetingQuotaExceededError,
+   HttpError,
++  ProjectConflictError,
++  ProjectForbiddenError,
+   type FreeLimitExceededMetadata,
+ } from '../utils/errors';
+ 
+@@ -235,7 +237,12 @@ export class ApiClient {
+         .clone()
+         .json()
+         .catch(() => null)) as {
+-        detail?: { code?: string; reason?: string };
++        detail?: {
++          code?: string;
++          reason?: string;
++          canonical_resource?: unknown;
++          user_error_message?: string;
++        };
+       } | null;
+       if (body?.detail?.code === 'sync-reset-required') {
+         throw new SyncResetRequiredError(
+@@ -243,8 +250,33 @@ export class ApiClient {
+           body.detail.reason ?? 'unknown'
+         );
+       }
++      if (
++        endpoint.includes('/projects') &&
++        body?.detail?.canonical_resource !== undefined
++      ) {
++        throw new ProjectConflictError(
++          body.detail.user_error_message ?? 'Project version conflict',
++          body.detail.canonical_resource
++        );
++      }
+       throw new HttpError(res.status, res.statusText || `HTTP ${res.status}`);
+     }
++    if (res.status === 403) {
++      const body = (await res
++        .clone()
++        .json()
++        .catch(() => null)) as {
++        detail?: { user_error_message?: string };
++      } | null;
++      const msg =
++        body?.detail?.user_error_message ??
++        res.statusText ??
++        `HTTP ${res.status}`;
++      if (endpoint.includes('/projects')) {
++        throw new ProjectForbiddenError(msg);
++      }
++      throw new HttpError(res.status, msg);
++    }
+     if (!res.ok && (res.status >= 500 || res.status === 408))
+       throw new HttpError(res.status, res.statusText || `HTTP ${res.status}`);
+   }
+@@ -1169,6 +1201,8 @@ export class ApiClient {
+       if (error instanceof StreamCancellationError) return false;
+       if (error instanceof MeetingQuotaExceededError) return false;
+       if (error instanceof SyncResetRequiredError) return false;
++      if (error instanceof ProjectConflictError) return false;
++      if (error instanceof ProjectForbiddenError) return false;
+       if (error instanceof RequestTimeoutError) return true;
+       if (error instanceof AuthenticationError) return true;
+       if (error instanceof RateLimitError) return true;
+diff --git a/packages/sdk/src/core/sync/client-capabilities.ts b/packages/sdk/src/core/sync/client-capabilities.ts
+new file mode 100644
+index 00000000000..19e538dba8b
+--- /dev/null
++++ b/packages/sdk/src/core/sync/client-capabilities.ts
+@@ -0,0 +1,19 @@
++const SHARED_PROJECTS_REST = '0.84.0';
++
++function compareVersions(a: string, b: string): number {
++  const pa = a.split('.').map(Number);
++  const pb = b.split('.').map(Number);
++  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
++    const va = pa[i] ?? 0;
++    const vb = pb[i] ?? 0;
++    if (va !== vb) return va - vb;
++  }
++  return 0;
++}
++
++export function usesSharedProjectsRest(
++  clientVersion: string | null | undefined
++): boolean {
++  if (!clientVersion) return false;
++  return compareVersions(clientVersion, SHARED_PROJECTS_REST) >= 0;
++}
+diff --git a/packages/sdk/src/core/sync/models/interfaces/store-interfaces.ts b/packages/sdk/src/core/sync/models/interfaces/store-interfaces.ts
+index 86a1d43e1ba..8637e7c331a 100644
+--- a/packages/sdk/src/core/sync/models/interfaces/store-interfaces.ts
++++ b/packages/sdk/src/core/sync/models/interfaces/store-interfaces.ts
+@@ -395,6 +395,7 @@ export interface IProjectStore extends IStore<Project> {
+   ): Promise<void>;
+   deleteProject(id: string): Promise<void>;
+   persistAndHydrateProjects(rows: ApiProjectModel[]): Promise<void>;
++  refreshProjects(): Promise<void>;
+ }
+ 
+ export interface IMcpClientGrantStore extends IStore<McpClientGrant> {
+diff --git a/packages/sdk/src/core/sync/models/project.ts b/packages/sdk/src/core/sync/models/project.ts
+index d1e943e5ae5..5c9c99eb233 100644
+--- a/packages/sdk/src/core/sync/models/project.ts
++++ b/packages/sdk/src/core/sync/models/project.ts
+@@ -4,6 +4,7 @@ import { makeObservable, observable } from 'mobx';
+ import { Model } from './base/model';
+ 
+ import type { IProjectStore } from './interfaces/store-interfaces';
++import type { ProjectCapabilities } from '../types/project-list';
+ 
+ export class Project extends Model<IProjectStore> {
+   static modelName = 'Project';
+@@ -14,6 +15,20 @@ export class Project extends Model<IProjectStore> {
+   limitChatContextToProject: boolean = true;
+   syncId: number = 0;
+ 
++  ownershipScope: 'personal' | 'team' = 'personal';
++  visibility: 'private' | 'team' = 'private';
++  effectiveRole: 'viewer' | 'editor' | null = null;
++  accessSource: 'owner' | 'explicit' | 'team' | null = null;
++  capabilities: ProjectCapabilities = {
++    canViewContent: true,
++    canEditContent: true,
++    canManageMembers: false,
++    canChangeVisibility: false,
++    canDelete: true,
++    canPublishOwnSnapshots: true,
++  };
++  version: number = 1;
++
+   constructor(
+     fields: Partial<Project> = {},
+     store: IProjectStore,
+@@ -28,6 +43,12 @@ export class Project extends Model<IProjectStore> {
+       starred: observable,
+       limitChatContextToProject: observable,
+       syncId: observable,
++      ownershipScope: observable,
++      visibility: observable,
++      effectiveRole: observable,
++      accessSource: observable,
++      capabilities: observable,
++      version: observable,
+     });
+   }
+ }
+diff --git a/packages/sdk/src/core/sync/stores/project-store.ts b/packages/sdk/src/core/sync/stores/project-store.ts
+index c177bd5c7c0..7b436c1dbfb 100644
+--- a/packages/sdk/src/core/sync/stores/project-store.ts
++++ b/packages/sdk/src/core/sync/stores/project-store.ts
+@@ -16,6 +16,11 @@ import { ApiProjectModel, LoadStrategy, PartialExcept } from '../types';
+ import { ModelConstructor, Store } from './base/store';
+ import { parseDate } from './utils';
+ 
++import type {
++  ProjectListResponse,
++  ProjectResource,
++} from '../types/project-list';
++
+ interface ProjectDeleteSnapshot {
+   project: Record<string, unknown>;
+   assignedThreadIds: string[];
+@@ -32,6 +37,7 @@ type ProjectUpdateParams = Partial<
+ export class ProjectStore extends Store<Project> implements IProjectStore {
+   static persisted: boolean = true;
+   static loadStrategy: LoadStrategy = 'eager';
++  static schemaVersion: number = 2;
+ 
+   protected readonly ModelClass: ModelConstructor<Project, this> = Project;
+ 
+@@ -47,6 +53,7 @@ export class ProjectStore extends Store<Project> implements IProjectStore {
+       updateProject: action.bound,
+       deleteProject: action.bound,
+       persistAndHydrateProjects: action,
++      refreshProjects: action.bound,
+     });
+   }
+ 
+@@ -107,6 +114,54 @@ export class ProjectStore extends Store<Project> implements IProjectStore {
+     };
+   }
+ 
++  private mapProjectResource(
++    res: ProjectResource
++  ): PartialExcept<Project, 'id'> {
++    return {
++      id: res.id,
++      name: res.name,
++      instructions: res.instructions,
++      starred: res.starred,
++      limitChatContextToProject: res.limitChatContextToProject,
++      ownershipScope: res.ownershipScope,
++      visibility: res.visibility,
++      effectiveRole: res.effectiveRole,
++      accessSource: res.accessSource,
++      capabilities: res.capabilities,
++      version: res.version,
++      syncId: 0,
++      createdAt: parseDate(res.createdAt),
++      updatedAt: parseDate(res.updatedAt),
++    };
++  }
++
++  async refreshProjects(): Promise<void> {
++    const body = await this.sdk.apiClient.fetch<ProjectListResponse>(
++      this.apiEndpoint,
++      { method: 'GET' }
++    );
++
++    const resources = body.projects ?? [];
++    const seenIds = new Set<string>(resources.map((r) => r.id));
++
++    const fields = resources.map((res) => this.mapProjectResource(res));
++    const added = fields.map((data) => this.add(data));
++    if (ProjectStore.persisted && added.length > 0) {
++      await this.sdk.storage.bulkSet(this.tableName, added);
++    }
++
++    const removedIds = Array.from(this.data.keys()).filter(
++      (id) => !seenIds.has(id)
++    );
++    for (const id of removedIds) {
++      this.data.delete(id);
++      await this.clearLocalProjectAssignments(id);
++    }
++    if (ProjectStore.persisted && removedIds.length > 0) {
++      await this.sdk.storage.bulkRemove(this.tableName, removedIds);
++    }
++  }
++
+   private normalizeProjectName(name: string): string {
+     const trimmedName = name.trim();
+     if (!trimmedName) {
+diff --git a/packages/sdk/src/core/sync/sync-processor.ts b/packages/sdk/src/core/sync/sync-processor.ts
+index 89a17f98b23..3aae4a3520d 100644
+--- a/packages/sdk/src/core/sync/sync-processor.ts
++++ b/packages/sdk/src/core/sync/sync-processor.ts
+@@ -191,6 +191,9 @@ export class SyncProcessor {
+         return await stores.meetings.persistAndHydrateMeetings(packet.rows);
+       }
+       case 'projects': {
++        if (this.sdk.usesRestProjects) {
++          return EMPTY_SYNC_PERSIST_RESULT;
++        }
+         await stores.projects.persistAndHydrateProjects(packet.rows);
+         return EMPTY_SYNC_PERSIST_RESULT;
+       }
+diff --git a/packages/sdk/src/core/sync/types/project-list.ts b/packages/sdk/src/core/sync/types/project-list.ts
+new file mode 100644
+index 00000000000..a606fb88524
+--- /dev/null
++++ b/packages/sdk/src/core/sync/types/project-list.ts
+@@ -0,0 +1,30 @@
++import type { ProjectId } from './common';
++
++export interface ProjectCapabilities {
++  canViewContent: boolean;
++  canEditContent: boolean;
++  canManageMembers: boolean;
++  canChangeVisibility: boolean;
++  canDelete: boolean;
++  canPublishOwnSnapshots: boolean;
++}
++
++export interface ProjectResource {
++  id: ProjectId;
++  name: string;
++  instructions: string | null;
++  ownershipScope: 'personal' | 'team';
++  visibility: 'private' | 'team';
++  effectiveRole: 'viewer' | 'editor' | null;
++  accessSource: 'owner' | 'explicit' | 'team' | null;
++  capabilities: ProjectCapabilities;
++  starred: boolean;
++  limitChatContextToProject: boolean;
++  version: number;
++  createdAt: string;
++  updatedAt: string;
++}
++
++export interface ProjectListResponse {
++  projects: ProjectResource[];
++}
+diff --git a/packages/sdk/src/core/utils/errors.ts b/packages/sdk/src/core/utils/errors.ts
+index 4086140c889..efdad3490ef 100644
+--- a/packages/sdk/src/core/utils/errors.ts
++++ b/packages/sdk/src/core/utils/errors.ts
+@@ -192,6 +192,25 @@ export class ProjectNotEmptyError extends Error {
+   }
+ }
+ 
++export class ProjectConflictError extends HttpError {
++  readonly canonicalResource?: unknown;
++
++  constructor(message: string, canonicalResource?: unknown) {
++    super(409, message);
++    this.name = 'ProjectConflictError';
++    this.canonicalResource = canonicalResource;
++    Object.setPrototypeOf(this, new.target.prototype);
++  }
++}
++
++export class ProjectForbiddenError extends HttpError {
++  constructor(message: string) {
++    super(403, message);
++    this.name = 'ProjectForbiddenError';
++    Object.setPrototypeOf(this, new.target.prototype);
++  }
++}
++
+ export type ChatConnectionReason =
+   | 'ENOTFOUND'
+   | 'CONNECTION_ERROR'

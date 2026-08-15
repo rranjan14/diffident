@@ -1,0 +1,47 @@
+diff --git a/added.txt b/added.txt
+new file mode 100644
+index 0000000..3b18e51
+--- /dev/null
++++ b/added.txt
+@@ -0,0 +1 @@
++hello
+diff --git a/gone.txt b/gone.txt
+deleted file mode 100644
+index 3b18e51..0000000
+--- a/gone.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-hello
+diff --git a/old_name.txt b/new_name.txt
+similarity index 95%
+rename from old_name.txt
+rename to new_name.txt
+index 1234567..89abcde 100644
+--- a/old_name.txt
++++ b/new_name.txt
+@@ -1,2 +1,2 @@
+ keep
+-before
++after
+diff --git a/script.sh b/script.sh
+old mode 100644
+new mode 100755
+diff --git a/logo.png b/logo.png
+index 1111111..2222222 100644
+Binary files a/logo.png and b/logo.png differ
+diff --git a/nonewline.txt b/nonewline.txt
+index 3333333..4444444 100644
+--- a/nonewline.txt
++++ b/nonewline.txt
+@@ -1 +1 @@
+-old
+\ No newline at end of file
++new
+\ No newline at end of file
+diff --git a/single.txt b/single.txt
+index 5555555..6666666 100644
+--- a/single.txt
++++ b/single.txt
+@@ -12 +12,2 @@ fn enclosing_function()
+ context
++added
