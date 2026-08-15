@@ -43,5 +43,6 @@ edition.workspace = true
 [dependencies]
 diffident-model.workspace = true
 diffident-ui.workspace = true
+diffident-forge.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
