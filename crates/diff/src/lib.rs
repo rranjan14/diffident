@@ -107,12 +107,17 @@ pub enum Row {
         hunk_ix: usize,
         line_ix: usize,
     },
-    /// Collapsed unchanged region; `hidden` is how many source lines it covers.
+    /// Collapsed unchanged region.
     Expander {
         file_ix: usize,
-        /// Index of the hunk this gap precedes.
+        /// Index of the hunk this gap precedes. Equals `hunks.len()` for the
+        /// gap that runs from the last hunk to the end of the file.
         before_hunk_ix: usize,
-        hidden: u32,
+        /// How many source lines the gap covers, or `None` when that is not
+        /// knowable from the diff alone — a trailing gap runs to end-of-file,
+        /// and the diff never states how long the file is. Resolved when the
+        /// expansion actually fetches the file.
+        hidden: Option<u32>,
     },
     /// Blank separator. Carries no data so the UI can style it freely.
     Spacer,

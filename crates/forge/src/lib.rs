@@ -30,6 +30,13 @@ pub struct PrSummary {
     pub base_ref_name: String,
     pub is_draft: bool,
     pub url: String,
+    /// True when the head branch lives in a fork rather than in this repo.
+    ///
+    /// Load-bearing for stack detection: branch names are unique only *within*
+    /// a repo, so `head_ref_name` alone cannot identify a PR. A fork PR whose
+    /// head branch is `main` would otherwise look like the parent of every
+    /// PR targeting `main`.
+    pub is_cross_repository: bool,
 }
 
 /// The full PR shape, fetched only when a review is opened.
