@@ -4,3 +4,7 @@
 # Local planning docs — never commit
 /IMPLEMENTATION_PLAN.md
 /docs/superpowers/
+
+# Coverage artifacts
+/lcov.info
+/coverage.txt
