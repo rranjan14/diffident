@@ -2,7 +2,7 @@
 //! no rendering, no transport. If this file grows past wiring, the logic belongs
 //! in a crate under `crates/`.
 
-use diffident_model::Review;
+use diffident_model::{LoadState, Review, ReviewId};
 use diffident_ui::Workspace;
 use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 use gpui_platform::application;
@@ -22,26 +22,54 @@ fn main() {
     });
 }
 
-/// Stand-in until the forge crate lands and the rail loads real open PRs.
+/// Stand-in until Task H loads real open PRs. Kept compiling against the new
+/// `Review` shape so Wave 1 can start.
 fn placeholder_reviews() -> Vec<Review> {
     vec![
         Review {
-            number: Some(142),
+            id: ReviewId {
+                repo: "owner/name".into(),
+                number: 142,
+            },
+            title: "Add search".into(),
             branch: "feat/add-search".into(),
-            added: 284,
-            removed: 31,
+            depth: 0,
+            is_draft: false,
+            state: LoadState::Ready {
+                head_sha: "abc".into(),
+                added: 284,
+                removed: 31,
+            },
         },
         Review {
-            number: None,
+            id: ReviewId {
+                repo: "owner/name".into(),
+                number: 140,
+            },
+            title: "Fix scroll jitter".into(),
             branch: "fix/scroll-jitter".into(),
-            added: 96,
-            removed: 12,
+            depth: 0,
+            is_draft: false,
+            state: LoadState::Ready {
+                head_sha: "def".into(),
+                added: 96,
+                removed: 12,
+            },
         },
         Review {
-            number: Some(139),
+            id: ReviewId {
+                repo: "owner/name".into(),
+                number: 139,
+            },
+            title: "Refactor row model".into(),
             branch: "refactor/row-model".into(),
-            added: 1204,
-            removed: 806,
+            depth: 0,
+            is_draft: false,
+            state: LoadState::Ready {
+                head_sha: "ghi".into(),
+                added: 1204,
+                removed: 806,
+            },
         },
     ]
 }

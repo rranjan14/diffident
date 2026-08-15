@@ -1,0 +1,8 @@
+[package]
+name = "diffident-highlight"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+syntect.workspace = true
+two-face.workspace = true
