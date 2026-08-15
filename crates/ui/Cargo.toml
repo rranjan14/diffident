@@ -1,0 +1,8 @@
+[package]
+name = "diffident-ui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+diffident-model.workspace = true
+gpui.workspace = true

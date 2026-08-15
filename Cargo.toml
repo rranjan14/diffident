@@ -1,0 +1,28 @@
+[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+# Single source of truth for the gpui pin — every crate resolves the same revision.
+[workspace.dependencies]
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
+    "font-kit",
+    "runtime_shaders",
+] }
+diffident-model = { path = "crates/model" }
+diffident-ui = { path = "crates/ui" }
+
+# The binary. Owns nothing but startup and wiring.
+[package]
+name = "diffident"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+diffident-model.workspace = true
+diffident-ui.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true

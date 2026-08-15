@@ -1,0 +1,3 @@
+[toolchain]
+# gpui on zed main uses stdlib features stabilized after 1.91 (e.g. slice_as_array).
+channel = "1.97.1"
