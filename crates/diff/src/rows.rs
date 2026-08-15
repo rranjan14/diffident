@@ -18,16 +18,18 @@ pub fn build_rows(files: &[DiffFile]) -> Vec<Row> {
 
         let mut prev_end: Option<u32> = None;
         for (hunk_ix, hunk) in file.hunks.iter().enumerate() {
-            // Unchanged lines git omitted between the previous hunk and this one.
-            if let Some(end) = prev_end {
-                let hidden = hunk.new_start.saturating_sub(end);
-                if hidden > 0 {
-                    rows.push(Row::Expander {
-                        file_ix,
-                        before_hunk_ix: hunk_ix,
-                        hidden,
-                    });
-                }
+            // The gap before this hunk: unchanged lines git omitted, either
+            // since the previous hunk or since the start of the file.
+            let hidden = match prev_end {
+                Some(end) => hunk.new_start.saturating_sub(end),
+                None => hunk.new_start.saturating_sub(1),
+            };
+            if hidden > 0 {
+                rows.push(Row::Expander {
+                    file_ix,
+                    before_hunk_ix: hunk_ix,
+                    hidden: Some(hidden),
+                });
             }
             rows.push(Row::HunkHeader { file_ix, hunk_ix });
             for line_ix in 0..hunk.lines.len() {
@@ -38,6 +40,18 @@ pub fn build_rows(files: &[DiffFile]) -> Vec<Row> {
                 });
             }
             prev_end = Some(hunk.new_start + hunk.new_count);
+        }
+
+        // A trailing gap, if the file continues past the last hunk. Emitted
+        // unconditionally because the diff cannot say where the file ends —
+        // an expansion that turns out to yield nothing is the standard
+        // behaviour here, and is cheaper than a round trip to find out.
+        if !file.hunks.is_empty() {
+            rows.push(Row::Expander {
+                file_ix,
+                before_hunk_ix: file.hunks.len(),
+                hidden: None,
+            });
         }
     }
     rows
@@ -99,27 +113,72 @@ mod tests {
         assert!(!rows.iter().any(|r| matches!(r, Row::Line { .. })));
     }
 
+    fn expanders_of(text: &str) -> Vec<Row> {
+        rows_of(text)
+            .into_iter()
+            .filter(|r| matches!(r, Row::Expander { .. }))
+            .collect()
+    }
+
+    /// The gap that runs from the last hunk to end-of-file.
+    fn trailing(before_hunk_ix: usize) -> Row {
+        Row::Expander {
+            file_ix: 0,
+            before_hunk_ix,
+            hidden: None,
+        }
+    }
+
     #[test]
     fn a_gap_between_hunks_becomes_an_expander() {
         let text = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n a\n@@ -50,1 +50,1 @@\n b\n";
-        let expanders: Vec<_> = rows_of(text)
-            .into_iter()
-            .filter(|r| matches!(r, Row::Expander { .. }))
-            .collect();
         assert_eq!(
-            expanders,
-            vec![Row::Expander {
-                file_ix: 0,
-                before_hunk_ix: 1,
-                hidden: 48
-            }]
+            expanders_of(text),
+            vec![
+                Row::Expander {
+                    file_ix: 0,
+                    before_hunk_ix: 1,
+                    hidden: Some(48)
+                },
+                trailing(2),
+            ]
         );
     }
 
     #[test]
-    fn adjacent_hunks_get_no_expander() {
+    fn adjacent_hunks_get_no_expander_between_them() {
         let text = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n a\n@@ -2,1 +2,1 @@\n b\n";
-        assert!(!rows_of(text).iter().any(|r| matches!(r, Row::Expander { .. })));
+        assert_eq!(expanders_of(text), vec![trailing(2)]);
+    }
+
+    #[test]
+    fn a_file_whose_first_hunk_starts_below_line_one_gets_a_leading_expander() {
+        // Without this there is no row to click to reveal lines 1..49, so the
+        // top of such a file is permanently unreachable.
+        let text = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -50,1 +50,1 @@\n-a\n+b\n";
+        assert_eq!(
+            expanders_of(text),
+            vec![
+                Row::Expander {
+                    file_ix: 0,
+                    before_hunk_ix: 0,
+                    hidden: Some(49)
+                },
+                trailing(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_whose_first_hunk_starts_at_line_one_gets_no_leading_expander() {
+        assert_eq!(expanders_of(ONE_HUNK), vec![trailing(1)]);
+    }
+
+    #[test]
+    fn a_file_with_no_hunks_gets_no_trailing_expander() {
+        // Nothing to expand into: binary and mode-only changes have no content.
+        let text = "diff --git a/x.png b/x.png\nBinary files a/x.png and b/x.png differ\n";
+        assert!(expanders_of(text).is_empty());
     }
 
     #[test]

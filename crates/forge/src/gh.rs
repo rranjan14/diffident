@@ -53,50 +53,64 @@ pub struct Gh;
 
 impl GhRunner for Gh {
     fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<String, GhError> {
-        let mut child = Command::new("gh")
-            .args(args)
-            .stdin(if stdin.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => GhError::NotInstalled,
-                _ => GhError::Failed {
-                    code: -1,
-                    message: e.to_string(),
-                },
-            })?;
-
-        if let Some(payload) = stdin {
-            child
-                .stdin
-                .as_mut()
-                .expect("piped above")
-                .write_all(payload.as_bytes())
-                .map_err(|e| GhError::Failed {
-                    code: -1,
-                    message: e.to_string(),
-                })?;
-        }
-
-        let out = child.wait_with_output().map_err(|e| GhError::Failed {
-            code: -1,
-            message: e.to_string(),
-        })?;
-        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-        if out.status.success() {
-            return Ok(stdout);
-        }
-        Err(GhError::from_exit(
-            out.status.code().unwrap_or(-1),
-            &stdout,
-            &String::from_utf8_lossy(&out.stderr),
-        ))
+        let mut cmd = Command::new("gh");
+        cmd.args(args);
+        run_command(cmd, stdin)
     }
+}
+
+/// Spawn `cmd`, feed it `stdin`, and collect its output.
+///
+/// Split out from `Gh::run` only so the pipe handling can be tested against a
+/// program that is guaranteed present and needs no network.
+fn run_command(mut cmd: Command, stdin: Option<&str>) -> Result<String, GhError> {
+    let mut child = cmd
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => GhError::NotInstalled,
+            _ => GhError::Failed {
+                code: -1,
+                message: e.to_string(),
+            },
+        })?;
+
+    // The write must run off-thread. A payload larger than the OS pipe buffer
+    // (~64KB) blocks partway through, and by then the child may be blocked
+    // writing to a stdout pipe nobody is draining — both sides stuck forever.
+    // Review submissions are sent on stdin precisely because they are large
+    // (spec §5), so this is the common path, not the exotic one.
+    let out = std::thread::scope(|scope| {
+        if let Some(payload) = stdin {
+            let mut pipe = child.stdin.take().expect("piped above");
+            // Dropping the handle when the closure ends is what signals EOF.
+            // A write error here is almost always the child exiting early, and
+            // its own exit status describes that far better than an io::Error
+            // would — so it is deliberately dropped.
+            scope.spawn(move || pipe.write_all(payload.as_bytes()));
+        }
+        child.wait_with_output()
+    })
+    .map_err(|e| GhError::Failed {
+        code: -1,
+        message: e.to_string(),
+    })?;
+
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    if out.status.success() {
+        return Ok(stdout);
+    }
+    Err(GhError::from_exit(
+        out.status.code().unwrap_or(-1),
+        &stdout,
+        &String::from_utf8_lossy(&out.stderr),
+    ))
 }
 
 /// Test double. Matches on the space-joined argv.
@@ -190,6 +204,22 @@ mod tests {
         let gh = FakeGh::new().with("api x", "{}");
         let _ = gh.run(&["api", "x"], Some("payload"));
         assert_eq!(gh.stdins(), vec![Some("payload".to_string())]);
+    }
+
+    #[test]
+    fn a_stdin_payload_larger_than_the_pipe_buffer_does_not_deadlock() {
+        // 1 MiB is comfortably past the ~64KB pipe buffer. Before the writer
+        // moved off-thread this hung forever rather than failing.
+        let payload = "x".repeat(1024 * 1024);
+        let out = run_command(std::process::Command::new("cat"), Some(&payload)).unwrap();
+        assert_eq!(out.len(), payload.len());
+    }
+
+    #[test]
+    fn a_child_that_exits_without_reading_stdin_reports_its_status_not_a_pipe_error() {
+        let payload = "x".repeat(1024 * 1024);
+        let err = run_command(std::process::Command::new("false"), Some(&payload)).unwrap_err();
+        assert!(matches!(err, GhError::Failed { code: 1, .. }), "got: {err:?}");
     }
 
     #[test]

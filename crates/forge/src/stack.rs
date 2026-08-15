@@ -22,9 +22,16 @@ pub struct RailEntry {
 /// input PR appears exactly once.
 pub fn stack_order(prs: &[PrSummary]) -> Vec<RailEntry> {
     // head branch -> index, so a base branch can find its parent PR.
+    //
+    // Cross-repo PRs are excluded as candidate parents: their head branch lives
+    // in a fork, so a base branch resolving to the same *name* in this repo is a
+    // coincidence, not a stack. Skipping them also makes this map collision-free
+    // — git already forbids two branches of one name in one repo — so there is
+    // no ambiguous-parent case left to resolve.
     let by_head: HashMap<&str, usize> = prs
         .iter()
         .enumerate()
+        .filter(|(_, p)| !p.is_cross_repository)
         .map(|(i, p)| (p.head_ref_name.as_str(), i))
         .collect();
 
@@ -86,6 +93,15 @@ mod tests {
             base_ref_name: base.to_string(),
             is_draft: false,
             url: String::new(),
+            is_cross_repository: false,
+        }
+    }
+
+    /// Same as `pr`, but the head branch lives in a fork.
+    fn fork_pr(number: u32, head: &str, base: &str) -> PrSummary {
+        PrSummary {
+            is_cross_repository: true,
+            ..pr(number, head, base)
         }
     }
 
@@ -135,5 +151,35 @@ mod tests {
     #[test]
     fn empty_input_is_empty_output() {
         assert!(stack_order(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_fork_pr_never_becomes_the_parent_of_prs_that_merely_share_its_branch_name() {
+        // `main` and `patch-1` are the two most common fork head branches.
+        // Matching on branch name alone made every main-targeting PR a child.
+        let prs = [
+            fork_pr(1, "main", "main"),
+            pr(2, "feature-a", "main"),
+            pr(3, "feature-b", "main"),
+        ];
+        assert_eq!(shape(&stack_order(&prs)), vec![(1, 0), (2, 0), (3, 0)]);
+    }
+
+    #[test]
+    fn two_forks_sharing_a_head_branch_name_nest_nothing_under_either() {
+        let prs = [
+            fork_pr(1, "patch-1", "main"),
+            fork_pr(2, "patch-1", "main"),
+            pr(3, "x", "patch-1"),
+        ];
+        assert_eq!(shape(&stack_order(&prs)), vec![(1, 0), (2, 0), (3, 0)]);
+    }
+
+    #[test]
+    fn a_fork_pr_can_still_be_stacked_on_a_branch_in_this_repo() {
+        // Only the *parent* side needs a same-repo head; a fork PR's base
+        // always names a branch here, so it can legitimately be a child.
+        let prs = [pr(1, "a", "main"), fork_pr(2, "b", "a")];
+        assert_eq!(shape(&stack_order(&prs)), vec![(1, 0), (2, 1)]);
     }
 }
