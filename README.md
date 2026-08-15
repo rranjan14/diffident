@@ -1,5 +1,7 @@
 # diffident
 
+[![CI](https://github.com/rranjan14/diffident/actions/workflows/ci.yml/badge.svg)](https://github.com/rranjan14/diffident/actions/workflows/ci.yml)
+
 A native code review app in Rust, built on [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui).
 
 **One window, many reviews.** Existing desktop diff viewers open a separate OS window per
@@ -11,6 +13,13 @@ groups.
 
 Early. The window, the review rail and crate scaffolding exist; the diff engine, GitHub
 transport and review semantics do not yet. Not usable for real review work.
+
+## Install
+
+Prebuilt universal macOS binaries are on the [releases
+page](https://github.com/rranjan14/diffident/releases). They are unsigned, so macOS
+quarantines them — `xattr -d com.apple.quarantine diffident` before the first run.
+Each release carries full install steps and a SHA-256 checksum.
 
 ## Build
 

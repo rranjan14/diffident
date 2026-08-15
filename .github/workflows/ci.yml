@@ -1,0 +1,89 @@
+name: CI
+
+# PR opened + every push to a PR branch, and pushes to main (which is what a
+# merged PR becomes). One job, two triggers — the work is identical.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push to a PR supersedes the in-flight run. macOS runners bill at 10x,
+# so cancelling matters here more than on linux.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Deliberately NOT setting RUSTFLAGS: -D warnings — RUSTFLAGS applies to
+  # dependencies too, and gpui would fail the build on its own warnings.
+  # The clippy step scopes -D warnings to this workspace instead.
+
+jobs:
+  test:
+    # Must be macOS: crates/ui depends on gpui, whose platform crate is built
+    # here with macOS features only. A linux runner cannot compile this repo.
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # rust-toolchain.toml pins 1.97.1 and its components; rustup honours it
+      # automatically, so no toolchain is named here.
+      - name: Show toolchain
+        run: rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # gpui is a git dependency pulling ~60 transitive crates and running
+          # bindgen. Without this the job takes minutes on every run.
+          cache-on-failure: true
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Two one-shot invocations, NOT `--no-report` + `report`. The `report`
+      # subcommand rejects `--workspace` and silently reports the root package
+      # only, which reads as 0% and hides every crate. Verified locally.
+      - name: Test with coverage
+        run: |
+          cargo llvm-cov --workspace --lcov --output-path lcov.info
+          cargo llvm-cov --workspace --summary-only > coverage.txt
+          cat coverage.txt
+
+      - name: Coverage to job summary
+        run: |
+          {
+            echo '## Coverage'
+            echo
+            echo '```'
+            cat coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Edit one sticky comment rather than adding a new one per push.
+      - name: Comment coverage on PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo '<!-- coverage-report -->'
+            echo '## Coverage'
+            echo
+            echo '```'
+            cat coverage.txt
+            echo '```'
+          } > body.md
+          gh pr comment "${{ github.event.number }}" \
+            --body-file body.md --edit-last --create-if-none
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lcov
+          path: lcov.info

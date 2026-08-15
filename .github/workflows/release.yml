@@ -1,0 +1,71 @@
+name: Release
+
+# Tag-driven: `git tag v0.1.0 && git push --tags`.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history so the generated changelog can diff against the
+          # previous tag; a shallow clone produces an empty release body.
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      # macos-latest is Apple Silicon. Adding the x86_64 target lets us ship one
+      # universal binary that runs on both Intel and Apple Silicon Macs.
+      - name: Add Intel target
+        run: rustup target add x86_64-apple-darwin
+
+      - name: Build both architectures
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+
+      - name: Make universal binary
+        run: |
+          lipo -create -output diffident \
+            target/aarch64-apple-darwin/release/diffident \
+            target/x86_64-apple-darwin/release/diffident
+          strip diffident
+          lipo -info diffident
+
+      - name: Package
+        id: pkg
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          NAME="diffident-${TAG}-macos-universal.tar.gz"
+          tar -czf "$NAME" diffident LICENSE README.md
+          shasum -a 256 "$NAME" > "$NAME.sha256"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      # --generate-notes builds the changelog from commits and merged PRs since
+      # the previous tag.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.pkg.outputs.tag }}" \
+            --title "${{ steps.pkg.outputs.tag }}" \
+            --generate-notes \
+            --notes-file .github/release-preamble.md \
+            "${{ steps.pkg.outputs.name }}" \
+            "${{ steps.pkg.outputs.name }}.sha256"
