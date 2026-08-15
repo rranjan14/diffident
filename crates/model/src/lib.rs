@@ -4,6 +4,8 @@
 //! headless crates (diff, forge, session) use these types without pulling a UI toolkit
 //! into their build or their tests.
 
+pub mod comment;
+
 /// One open review. Everything a PR needs lives here, so N of them coexist in one window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Review {
