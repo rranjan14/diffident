@@ -20,6 +20,9 @@ pub struct Residency<T> {
     /// integer per review is free, and it means returning to a review whose
     /// diff was dropped still lands where the reviewer left off.
     cursors: HashMap<u32, usize>,
+    /// Head SHA each key was last admitted at, so a force-push can invalidate
+    /// the remembered cursor rather than restoring it into a different diff.
+    heads: HashMap<u32, String>,
     cap: usize,
 }
 
@@ -29,6 +32,7 @@ impl<T> Residency<T> {
             resident: Vec::new(),
             pending: Vec::new(),
             cursors: HashMap::new(),
+            heads: HashMap::new(),
             cap,
         }
     }
@@ -57,7 +61,19 @@ impl<T> Residency<T> {
     /// switched away is still correct data for *its own* review, and throwing
     /// it out would refetch the same seconds of work on the way back. What the
     /// reviewer is looking at is decided by `get`, not by who finished last.
-    pub fn admit(&mut self, key: u32, value: T) {
+    ///
+    /// `head` is the commit the diff was fetched at. When it differs from the
+    /// last admission the remembered cursor is dropped: the reviewer was on row
+    /// 900 of a diff that no longer exists, and restoring that position would
+    /// land them somewhere unrelated.
+    pub fn admit(&mut self, key: u32, value: T, head: &str) {
+        if self
+            .heads
+            .insert(key, head.to_string())
+            .is_some_and(|old| old != head)
+        {
+            self.cursors.remove(&key);
+        }
         self.pending.retain(|k| *k != key);
         self.resident.retain(|(k, _)| *k != key);
         self.resident.push((key, value));
@@ -116,6 +132,8 @@ impl<T> Residency<T> {
 mod tests {
     use super::*;
 
+    const HEAD: &str = "abc123";
+
     fn residency() -> Residency<char> {
         Residency::new(4)
     }
@@ -123,8 +141,8 @@ mod tests {
     #[test]
     fn a_resident_review_is_returned_and_promoted() {
         let mut r = residency();
-        r.admit(1, 'a');
-        r.admit(2, 'b');
+        r.admit(1, 'a', HEAD);
+        r.admit(2, 'b', HEAD);
         assert!(r.activate(1));
         assert_eq!(r.keys(), vec![2, 1], "activating must make it most-recent");
         assert_eq!(r.get(1), Some(&'a'));
@@ -133,7 +151,7 @@ mod tests {
     #[test]
     fn activating_an_absent_review_reports_a_miss_and_changes_nothing() {
         let mut r = residency();
-        r.admit(1, 'a');
+        r.admit(1, 'a', HEAD);
         assert!(!r.activate(9));
         assert_eq!(r.keys(), vec![1]);
     }
@@ -142,7 +160,7 @@ mod tests {
     fn admitting_beyond_the_cap_evicts_the_least_recently_used() {
         let mut r = residency();
         for (n, c) in [(1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e'), (6, 'f')] {
-            r.admit(n, c);
+            r.admit(n, c, HEAD);
         }
         assert_eq!(r.keys(), vec![3, 4, 5, 6]);
         assert_eq!(r.get(1), None, "1 was evicted");
@@ -159,7 +177,7 @@ mod tests {
     #[test]
     fn an_already_resident_review_never_starts_a_fetch() {
         let mut r = residency();
-        r.admit(7, 'a');
+        r.admit(7, 'a', HEAD);
         assert!(!r.begin_fetch(7));
     }
 
@@ -167,9 +185,29 @@ mod tests {
     fn admitting_a_result_clears_its_in_flight_mark() {
         let mut r = residency();
         r.begin_fetch(7);
-        r.admit(7, 'a');
+        r.admit(7, 'a', HEAD);
         assert!(!r.is_fetching(7));
         assert!(!r.begin_fetch(7), "now resident, so still no fetch");
+    }
+
+    #[test]
+    fn a_force_push_forgets_the_remembered_cursor() {
+        // Row 42 of the old diff is not row 42 of the new one, so restoring it
+        // would drop the reviewer somewhere unrelated.
+        let mut r = residency();
+        r.admit(1, 'a', "head-one");
+        r.remember_cursor(1, 42);
+        r.admit(1, 'b', "head-two");
+        assert_eq!(r.recall_cursor(1, 100), 0);
+    }
+
+    #[test]
+    fn re_admitting_at_the_same_head_keeps_the_cursor() {
+        let mut r = residency();
+        r.admit(1, 'a', HEAD);
+        r.remember_cursor(1, 42);
+        r.admit(1, 'b', HEAD);
+        assert_eq!(r.recall_cursor(1, 100), 42);
     }
 
     #[test]
@@ -180,10 +218,10 @@ mod tests {
     #[test]
     fn a_remembered_cursor_survives_eviction_of_its_diff() {
         let mut r = residency();
-        r.admit(1, 'a');
+        r.admit(1, 'a', HEAD);
         r.remember_cursor(1, 42);
         for (n, c) in [(2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')] {
-            r.admit(n, c);
+            r.admit(n, c, HEAD);
         }
         assert_eq!(r.get(1), None, "the diff itself is gone");
         assert_eq!(r.recall_cursor(1, 100), 42, "but the position is not");
@@ -217,8 +255,8 @@ mod tests {
         // it is correct data for its own review and cost seconds to get.
         let mut r = residency();
         r.begin_fetch(7);
-        r.admit(9, 'b'); // reviewer opened 9 meanwhile
-        r.admit(7, 'a'); // 7's slow result finally lands
+        r.admit(9, 'b', HEAD); // reviewer opened 9 meanwhile
+        r.admit(7, 'a', HEAD); // 7's slow result finally lands
         assert_eq!(r.get(7), Some(&'a'), "kept, so returning to 7 is instant");
         assert_eq!(r.keys(), vec![9, 7]);
     }
@@ -227,9 +265,9 @@ mod tests {
         // A refetch must not leave two entries, or the stale one can be served
         // after the fresh one is evicted.
         let mut r = residency();
-        r.admit(1, 'a');
-        r.admit(2, 'b');
-        r.admit(1, 'z');
+        r.admit(1, 'a', HEAD);
+        r.admit(2, 'b', HEAD);
+        r.admit(1, 'z', HEAD);
         assert_eq!(r.keys(), vec![2, 1]);
         assert_eq!(r.get(1), Some(&'z'));
     }

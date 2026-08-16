@@ -172,7 +172,7 @@ impl Workspace {
             v.scroll_to(row);
             v
         });
-        self.residency.admit(number, view);
+        self.residency.admit(number, view, &loaded.head_sha);
     }
 
     fn move_cursor(&mut self, f: impl Fn(&[diffident_diff::Row], usize) -> usize, cx: &mut Context<Self>) {
