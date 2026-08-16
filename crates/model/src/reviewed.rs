@@ -53,12 +53,6 @@ impl Reviewed {
         paths.iter().find(|p| !self.is_reviewed(review, p))
     }
 
-    /// Drop every mark for one review. Not used by Phase 4 — a force-push shows
-    /// a badge rather than resetting (§6) — but Phase 5's `content_hash` check
-    /// needs it once it can tell *which* files actually changed.
-    pub fn clear(&mut self, review: u32) {
-        self.by_review.remove(&review);
-    }
 }
 
 #[cfg(test)]
@@ -129,13 +123,4 @@ mod tests {
         assert_eq!(r.unreviewed_count(7, &paths()), 0);
     }
 
-    #[test]
-    fn clearing_forgets_only_that_review() {
-        let mut r = Reviewed::new();
-        r.toggle(7, "a.rs");
-        r.toggle(9, "a.rs");
-        r.clear(7);
-        assert!(!r.is_reviewed(7, "a.rs"));
-        assert!(r.is_reviewed(9, "a.rs"));
-    }
 }

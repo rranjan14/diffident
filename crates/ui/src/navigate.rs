@@ -93,6 +93,41 @@ pub fn prev_file(rows: &[Row], from: usize) -> usize {
     seek(rows, from, false, |r| matches!(r, Row::FileHeader { .. }))
 }
 
+/// The row starting the next unread file after `cursor`, wrapping within this
+/// diff.
+///
+/// `is_unread` is asked about a *file index*, so this stays free of any
+/// knowledge of how "read" is tracked.
+///
+/// Files the cursor is already inside are never a target: you are reviewing
+/// that one now, and jumping to its header would be a no-op that looks like a
+/// broken key. That is also what makes `None` meaningful — it says "this
+/// review has nothing further to offer", which is the caller's cue to move to
+/// the next PR in the stack rather than sitting still.
+pub fn next_unreviewed_row(
+    rows: &[Row],
+    cursor: usize,
+    is_unread: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    let here = rows.get(cursor).and_then(Row::file_ix);
+    let starts: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| matches!(row, Row::FileHeader { .. }))
+        .filter(|(_, row)| {
+            let file = row.file_ix();
+            file != here && file.is_some_and(&is_unread)
+        })
+        .map(|(ix, _)| ix)
+        .collect();
+
+    starts
+        .iter()
+        .find(|ix| **ix > cursor)
+        .or_else(|| starts.first())
+        .copied()
+}
+
 /// Move `rows_per_half_page` rows, clamped to the ends of the list.
 pub fn half_page(rows: &[Row], from: usize, distance: usize, down: bool) -> usize {
     let last = rows.len().saturating_sub(1);
@@ -146,6 +181,78 @@ mod tests {
         assert_eq!(half_page(&rows, 0, 4, true), 4);
         assert_eq!(half_page(&rows, rows.len() - 1, 40, true), rows.len() - 1);
         assert_eq!(half_page(&rows, 2, 40, false), 0);
+    }
+
+    /// a.rs, b.rs, c.rs — one hunk each.
+    const THREE_FILES: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n-x\n+y\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1,1 +1,1 @@\n-x\n+y\ndiff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1,1 +1,1 @@\n-x\n+y\n";
+
+    fn three_files() -> Vec<Row> {
+        build_rows(&parse(THREE_FILES))
+    }
+
+    /// Row index of file `ix`'s header.
+    fn header_of(rows: &[Row], ix: usize) -> usize {
+        rows.iter()
+            .position(|r| *r == Row::FileHeader { file_ix: ix })
+            .expect("every file has a header")
+    }
+
+    #[test]
+    fn tab_advances_to_the_next_unread_file_rather_than_standing_still() {
+        // The bug this replaced: the target was always the *first* unread row,
+        // so with the cursor already there tab abandoned the PR while b.rs and
+        // c.rs were still unread.
+        let rows = three_files();
+        let at = next_unreviewed_row(&rows, 0, |_| true);
+        assert_eq!(at, Some(header_of(&rows, 1)), "from a.rs, tab goes to b.rs");
+    }
+
+    #[test]
+    fn tab_keeps_advancing_on_repeated_presses() {
+        let rows = three_files();
+        let mut cursor = 0;
+        let mut visited = vec![];
+        for _ in 0..2 {
+            cursor = next_unreviewed_row(&rows, cursor, |_| true).expect("more to visit");
+            visited.push(cursor);
+        }
+        assert_eq!(visited, vec![header_of(&rows, 1), header_of(&rows, 2)]);
+    }
+
+    #[test]
+    fn tab_skips_files_already_read() {
+        let rows = three_files();
+        // b.rs read, c.rs not.
+        let at = next_unreviewed_row(&rows, 0, |ix| ix != 1);
+        assert_eq!(at, Some(header_of(&rows, 2)));
+    }
+
+    #[test]
+    fn tab_wraps_to_an_earlier_unread_file_from_the_end() {
+        let rows = three_files();
+        let last = header_of(&rows, 2);
+        // Only a.rs is unread; the cursor sits in c.rs.
+        let at = next_unreviewed_row(&rows, last, |ix| ix == 0);
+        assert_eq!(at, Some(header_of(&rows, 0)));
+    }
+
+    #[test]
+    fn a_review_with_nothing_left_reports_none_so_the_caller_can_cross_prs() {
+        let rows = three_files();
+        assert_eq!(next_unreviewed_row(&rows, 0, |_| false), None);
+    }
+
+    #[test]
+    fn the_file_under_the_cursor_is_never_the_target() {
+        // Only a.rs is unread and the cursor is inside it. Jumping to its own
+        // header would look like a dead key; None tells the caller to move on.
+        let rows = three_files();
+        assert_eq!(next_unreviewed_row(&rows, 0, |ix| ix == 0), None);
+    }
+
+    #[test]
+    fn an_empty_diff_has_nowhere_to_jump() {
+        assert_eq!(next_unreviewed_row(&[], 0, |_| true), None);
     }
 
     #[test]

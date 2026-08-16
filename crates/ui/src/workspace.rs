@@ -73,6 +73,7 @@ impl Workspace {
                 match listed {
                     Ok(listed) => {
                         this.error = None;
+                        let mut moved = Vec::new();
                         this.reviews = listed
                             .into_iter()
                             .map(|mut fresh| {
@@ -81,6 +82,9 @@ impl Workspace {
                                 if let Some(old) =
                                     this.reviews.iter().find(|r| r.id == fresh.id)
                                 {
+                                    if old.head_sha != fresh.head_sha {
+                                        moved.push(fresh.id.number);
+                                    }
                                     fresh.rebased =
                                         old.rebased || old.head_sha != fresh.head_sha;
                                     fresh.state = old.state.clone();
@@ -88,6 +92,21 @@ impl Workspace {
                                 fresh
                             })
                             .collect();
+
+                        // A cached diff for a moved head is stale, and `select`
+                        // serves the cache without refetching — so leaving it
+                        // there would show old code with no way to reload it.
+                        // The badge tells the reviewer; this makes it actionable.
+                        for number in moved {
+                            this.residency.forget(number);
+                        }
+                        // Reload whatever is on screen, or the pane goes blank
+                        // until the reviewer clicks the rail again.
+                        if let Some(ix) = this.active
+                            && this.diff().is_none()
+                        {
+                            this.select(ix, cx);
+                        }
                         if let Some(number) = open_pr
                             && let Some(ix) =
                                 this.reviews.iter().position(|r| r.id.number == number)
@@ -256,17 +275,6 @@ impl Workspace {
         }
     }
 
-    /// The row of the first unread file in the active review, if any.
-    fn first_unreviewed_row(&self, cx: &Context<Self>) -> Option<usize> {
-        let (number, diff) = (self.active_number()?, self.diff()?);
-        let view = diff.read(cx);
-        view.rows().iter().position(|row| {
-            row.file_ix()
-                .and_then(|ix| view.files().get(ix))
-                .is_some_and(|f| !self.reviewed.is_reviewed(number, f.display_path()))
-        })
-    }
-
     /// `tab`: go to the next unread file, crossing into the next PR of this
     /// stack when the current one is fully read.
     ///
@@ -275,9 +283,16 @@ impl Workspace {
     /// the stack: being done here must not drag the reviewer into an unrelated
     /// PR.
     fn next_unreviewed(&mut self, cx: &mut Context<Self>) {
-        if let Some(row) = self.first_unreviewed_row(cx) {
-            let view_row = self.diff().map(|d| d.read(cx).cursor);
-            if view_row != Some(row) {
+        if let (Some(number), Some(diff)) = (self.active_number(), self.diff()) {
+            let target = {
+                let view = diff.read(cx);
+                next_unreviewed_row(view.rows(), view.cursor, |file_ix| {
+                    view.files()
+                        .get(file_ix)
+                        .is_some_and(|f| !self.reviewed.is_reviewed(number, f.display_path()))
+                })
+            };
+            if let Some(row) = target {
                 self.move_cursor(move |_, _| row, cx);
                 return;
             }
