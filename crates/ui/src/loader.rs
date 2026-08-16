@@ -3,45 +3,11 @@ use diffident_forge::{Forge, Repo, gh::GhError, stack::stack_order};
 use diffident_highlight::{Highlights, rows::for_rows};
 use diffident_model::{LoadState, Review, ReviewId};
 
-/// Tags an in-flight fetch so a late result can be discarded (§5).
-///
-/// Carries the head SHA alongside the identity, but see `is_stale_for` — the
-/// SHA is *not* what decides staleness. It is here because it arrives with the
-/// response and is the session key (§7) and rebase signal (§6) that Phases 4
-/// and 5 need.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RequestId {
-    /// `owner/name`.
-    pub repo: String,
-    pub number: u32,
-    pub head_sha: String,
-}
-
-impl RequestId {
-    /// Whether a result tagged with `self` should be thrown away because the
-    /// reviewer is no longer looking at that review. `None` means nothing is
-    /// selected, so there is nothing to render into.
-    ///
-    /// Compares identity only, **not** `head_sha`. At request time the head is
-    /// unknown — it arrives with the response — so a head-sensitive check here
-    /// could only ever compare a result against itself. The SHA is carried for
-    /// the session key (§7) and rebase detection (§6), which are Phases 4 and 5.
-    ///
-    /// This does not order two in-flight loads of the *same* review, so if the
-    /// author force-pushes between them the older diff can win. Fixing that
-    /// needs a generation counter; it is not worth one until background refresh
-    /// exists in Phase 3, because today nothing re-fetches behind the user.
-    pub fn is_stale_for(&self, current: Option<&ReviewId>) -> bool {
-        match current {
-            Some(id) => id.repo != self.repo || id.number != self.number,
-            None => true,
-        }
-    }
-}
-
 /// Everything one review needs to render, fetched and parsed.
 pub struct LoadedReview {
-    pub request: RequestId,
+    /// The commit the diff was fetched at. Identifies *which* diff this is, so
+    /// a force-push between visits can be detected (§6, and Phase 5's session key).
+    pub head_sha: String,
     pub title: String,
     pub files: Vec<DiffFile>,
     /// Index-parallel with what the diff list renders (§3).
@@ -94,11 +60,7 @@ pub fn load_review<F: Forge + Sync>(
     let highlights = for_rows(&files, &rows);
 
     Ok(LoadedReview {
-        request: RequestId {
-            repo: repo.slug(),
-            number,
-            head_sha: detail.head_ref_oid,
-        },
+        head_sha: detail.head_ref_oid,
         title: detail.title,
         files,
         rows,
@@ -156,7 +118,7 @@ mod tests {
             .with(DETAIL_ARGS, DETAIL_JSON)
             .with("pr diff 7 --repo o/r --color never", DIFF);
         let loaded = load_review(&GitHub::new(gh), &repo(), 7).unwrap();
-        assert_eq!(loaded.request.head_sha, "abc");
+        assert_eq!(loaded.head_sha, "abc");
         assert_eq!(loaded.files.len(), 1);
         assert!(!loaded.rows.is_empty());
     }
@@ -197,53 +159,6 @@ mod tests {
     fn a_failed_fetch_surfaces_the_error_rather_than_an_empty_review() {
         let gh = FakeGh::new(); // nothing registered
         assert!(load_review(&GitHub::new(gh), &repo(), 7).is_err());
-    }
-
-    fn request(number: u32, head: &str) -> RequestId {
-        RequestId {
-            repo: "o/r".into(),
-            number,
-            head_sha: head.into(),
-        }
-    }
-
-    fn viewing(number: u32) -> ReviewId {
-        ReviewId {
-            repo: "o/r".into(),
-            number,
-        }
-    }
-
-    #[test]
-    fn a_result_for_the_review_on_screen_is_not_stale() {
-        assert!(!request(7, "abc").is_stale_for(Some(&viewing(7))));
-    }
-
-    #[test]
-    fn a_result_for_a_review_the_user_switched_away_from_is_stale() {
-        assert!(request(7, "abc").is_stale_for(Some(&viewing(9))));
-    }
-
-    #[test]
-    fn a_result_arriving_when_nothing_is_selected_is_stale() {
-        assert!(request(7, "abc").is_stale_for(None));
-    }
-
-    #[test]
-    fn a_result_from_another_repo_is_stale_even_at_the_same_pr_number() {
-        let other = ReviewId {
-            repo: "other/repo".into(),
-            number: 7,
-        };
-        assert!(request(7, "abc").is_stale_for(Some(&other)));
-    }
-
-    #[test]
-    fn the_head_sha_does_not_affect_staleness() {
-        // It is unknown at request time, so it can only ever compare a result
-        // against itself. It is carried for the session key and rebase
-        // detection, not for this guard.
-        assert!(!request(7, "def").is_stale_for(Some(&viewing(7))));
     }
 
     #[test]

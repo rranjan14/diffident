@@ -145,12 +145,14 @@ impl Workspace {
         .detach();
     }
 
-    /// Land a fetched diff, unless the reviewer has moved on (§5).
+    /// Land a fetched diff.
+    ///
+    /// Unconditional, even if the reviewer has since switched away: the result
+    /// is correct data for *its own* review and cost seconds to fetch, so it is
+    /// cached rather than discarded. Nothing can render into the wrong review
+    /// because `diff()` looks the active review up by number — the mismatch a
+    /// staleness check used to guard against is now unrepresentable.
     fn apply(&mut self, number: u32, loaded: LoadedReview, cx: &mut Context<Self>) {
-        let current = self.active.and_then(|ix| self.reviews.get(ix)).map(|r| &r.id);
-        if loaded.request.is_stale_for(current) {
-            return; // the reviewer switched away while this was in flight
-        }
         if let Some(r) = self.reviews.iter_mut().find(|r| r.id.number == number) {
             r.state = LoadState::Ready {
                 added: loaded.added,

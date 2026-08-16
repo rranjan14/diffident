@@ -43,7 +43,13 @@ impl<T> Residency<T> {
         }
     }
 
-    /// Insert as most-recently-used, evicting from the front past the cap.
+    /// Record a completed fetch: insert as most-recently-used, evict past the
+    /// cap, and clear the in-flight mark.
+    ///
+    /// Deliberately unconditional. A result that arrives after the reviewer has
+    /// switched away is still correct data for *its own* review, and throwing
+    /// it out would refetch the same seconds of work on the way back. What the
+    /// reviewer is looking at is decided by `get`, not by who finished last.
     pub fn admit(&mut self, key: u32, value: T) {
         self.pending.retain(|k| *k != key);
         self.resident.retain(|(k, _)| *k != key);
@@ -149,6 +155,17 @@ mod tests {
         r.abandon_fetch(7);
         assert!(!r.is_fetching(7));
         assert!(r.begin_fetch(7), "a failure must not block retrying forever");
+    }
+    #[test]
+    fn a_late_result_is_kept_even_though_the_reviewer_moved_on() {
+        // Switching away must not throw away a fetch that already succeeded —
+        // it is correct data for its own review and cost seconds to get.
+        let mut r = residency();
+        r.begin_fetch(7);
+        r.admit(9, 'b'); // reviewer opened 9 meanwhile
+        r.admit(7, 'a'); // 7's slow result finally lands
+        assert_eq!(r.get(7), Some(&'a'), "kept, so returning to 7 is instant");
+        assert_eq!(r.keys(), vec![9, 7]);
     }
     #[test]
     fn re_admitting_replaces_rather_than_duplicating() {
