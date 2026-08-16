@@ -1338,6 +1338,7 @@ dependencies = [
  "diffident-forge",
  "diffident-highlight",
  "diffident-model",
+ "diffident-session",
  "gpui",
 ]
 
