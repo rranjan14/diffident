@@ -1,5 +1,5 @@
 use crate::gh::{GhError, GhRunner};
-use crate::{Forge, PrDetail, PrFilter, PrSummary, Repo};
+use crate::{Forge, PrDetail, PrSummary, Repo};
 
 /// The GitHub `Forge`. Owns argv construction and JSON decoding; knows nothing
 /// about how the command is executed.
@@ -21,22 +21,19 @@ impl<R: GhRunner> GitHub<R> {
 /// The `--json` field set for list queries. Kept as a constant so the tests
 /// and the call site cannot drift apart.
 const LIST_FIELDS: &str = "number,title,headRefName,baseRefName,isDraft,url,isCrossRepository";
-const DETAIL_FIELDS: &str = "number,title,body,headRefName,baseRefName,headRefOid,baseRefOid";
+const DETAIL_FIELDS: &str = "number,title,headRefName,baseRefName,headRefOid";
 
 fn decode<T: serde::de::DeserializeOwned>(raw: &str) -> Result<T, GhError> {
     serde_json::from_str(raw).map_err(|e| GhError::BadOutput(e.to_string()))
 }
 
 impl<R: GhRunner> Forge for GitHub<R> {
-    fn list_prs(&self, repo: &Repo, filter: PrFilter) -> Result<Vec<PrSummary>, GhError> {
+    fn list_prs(&self, repo: &Repo) -> Result<Vec<PrSummary>, GhError> {
         let slug = repo.slug();
-        let mut args = vec![
+        let args = [
             "pr", "list", "--repo", &slug, "--state", "open", "--limit", "100", "--json",
             LIST_FIELDS,
         ];
-        if matches!(filter, PrFilter::ReviewRequested) {
-            args.extend_from_slice(&["--search", "review-requested:@me"]);
-        }
         decode(&self.runner.run(&args, None)?)
     }
 
@@ -76,22 +73,12 @@ mod tests {
             LIST_ARGS,
             r#"[{"number":7,"title":"t","headRefName":"h","baseRefName":"main","isDraft":false,"url":"u","isCrossRepository":false}]"#,
         );
-        let prs = GitHub::new(gh).list_prs(&repo(), PrFilter::AllOpen).unwrap();
+        let prs = GitHub::new(gh).list_prs(&repo()).unwrap();
         assert_eq!(prs.len(), 1);
         assert_eq!(prs[0].number, 7);
         assert_eq!(prs[0].base_ref_name, "main");
     }
 
-    #[test]
-    fn review_requested_filter_appends_a_search_flag() {
-        let args = format!("{LIST_ARGS} --search review-requested:@me");
-        let gh = FakeGh::new().with(&args, "[]");
-        let github = GitHub::new(gh);
-        github
-            .list_prs(&repo(), PrFilter::ReviewRequested)
-            .unwrap();
-        assert_eq!(github.runner().calls(), vec![args]);
-    }
 
     #[test]
     fn pr_diff_never_passes_the_patch_flag() {
@@ -107,8 +94,8 @@ mod tests {
     #[test]
     fn pr_detail_requests_the_head_sha_because_it_keys_the_session() {
         let gh = FakeGh::new().with(
-            "pr view 7 --repo o/r --json number,title,body,headRefName,baseRefName,headRefOid,baseRefOid",
-            r#"{"number":7,"title":"t","body":"b","headRefName":"h","baseRefName":"main","headRefOid":"abc","baseRefOid":"def"}"#,
+            "pr view 7 --repo o/r --json number,title,headRefName,baseRefName,headRefOid",
+            r#"{"number":7,"title":"t","headRefName":"h","baseRefName":"main","headRefOid":"abc"}"#,
         );
         let detail = GitHub::new(gh).pr_detail(&repo(), 7).unwrap();
         assert_eq!(detail.head_ref_oid, "abc");
@@ -118,7 +105,7 @@ mod tests {
     fn malformed_json_surfaces_as_bad_output_not_a_panic() {
         let gh = FakeGh::new().with(LIST_ARGS, "not json");
         let err = GitHub::new(gh)
-            .list_prs(&repo(), PrFilter::AllOpen)
+            .list_prs(&repo())
             .unwrap_err();
         assert!(matches!(err, GhError::BadOutput(_)));
     }

@@ -4,8 +4,6 @@
 //! the headless crates (diff, forge, session, highlight) use these types without
 //! pulling a UI toolkit into their build or their tests.
 
-pub mod comment;
-
 /// Identifies a review for the life of the app.
 ///
 /// `(repo, number)` is stable; the head SHA is not, so it lives in `LoadState`
@@ -26,11 +24,7 @@ pub enum LoadState {
     /// Listed in the rail, never opened.
     Idle,
     Loading,
-    Ready {
-        head_sha: String,
-        added: u32,
-        removed: u32,
-    },
+    Ready { added: u32, removed: u32 },
     Failed {
         message: String,
     },
@@ -54,13 +48,6 @@ impl Review {
         format!("#{}", self.id.number)
     }
 
-    /// `Some((added, removed))` once the diff has landed, `None` before.
-    pub fn counts(&self) -> Option<(u32, u32)> {
-        match self.state {
-            LoadState::Ready { added, removed, .. } => Some((added, removed)),
-            _ => None,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -86,17 +73,4 @@ mod tests {
         assert_eq!(review().subtitle(), "#142");
     }
 
-    #[test]
-    fn counts_are_absent_until_the_diff_lands() {
-        assert_eq!(review().counts(), None);
-        let loaded = Review {
-            state: LoadState::Ready {
-                head_sha: "abc".into(),
-                added: 12,
-                removed: 3,
-            },
-            ..review()
-        };
-        assert_eq!(loaded.counts(), Some((12, 3)));
-    }
 }

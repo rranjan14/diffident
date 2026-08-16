@@ -82,7 +82,6 @@ mod tests {
             1,
             0,
             LoadState::Ready {
-                head_sha: "abc".into(),
                 added: 12,
                 removed: 3,
             },
