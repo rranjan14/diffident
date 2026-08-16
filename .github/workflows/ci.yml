@@ -44,9 +44,15 @@ jobs:
 
       - uses: taiki-e/install-action@cargo-llvm-cov
 
-      # Placeholder grep lives on Task H. Task 0 is required to land on main
-      # with `Implemented by its owning task` stubs; failing every stacked PR
-      # for those stubs made the stack unmergeable.
+      # Phase 2 is complete: every Task 0 placeholder is gone. This grep
+      # catches a bad merge that reverts a module to the one-line stub
+      # without failing any test — that happened to Tasks B–F once.
+      - name: No module left unimplemented
+        run: |
+          if grep -rl "Implemented by its owning task" crates/; then
+            echo "::error::the files above are still Task 0 placeholders"
+            exit 1
+          fi
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings

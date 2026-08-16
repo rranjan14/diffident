@@ -1277,6 +1277,7 @@ dependencies = [
 name = "diffident"
 version = "0.1.0"
 dependencies = [
+ "diffident-forge",
  "diffident-model",
  "diffident-ui",
  "gpui",
