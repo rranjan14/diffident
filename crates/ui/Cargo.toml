@@ -5,4 +5,7 @@ edition.workspace = true
 
 [dependencies]
 diffident-model.workspace = true
+diffident-diff.workspace = true
+diffident-forge.workspace = true
+diffident-highlight.workspace = true
 gpui.workspace = true

@@ -52,16 +52,15 @@ impl Workspace {
                             .flex()
                             .gap_2()
                             .text_sm()
-                            .child(
+                            .children(review.counts().map(|(added, removed)| {
                                 div()
-                                    .text_color(theme.added)
-                                    .child(format!("+{}", review.added)),
-                            )
-                            .child(
-                                div()
-                                    .text_color(theme.removed)
-                                    .child(format!("-{}", review.removed)),
-                            ),
+                                    .flex()
+                                    .gap_2()
+                                    .child(div().text_color(theme.added).child(format!("+{added}")))
+                                    .child(
+                                        div().text_color(theme.removed).child(format!("-{removed}")),
+                                    )
+                            })),
                     ),
             )
             .child(
