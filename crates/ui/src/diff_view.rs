@@ -70,7 +70,6 @@ pub struct DiffView {
     /// Where inside the scrollbar thumb the pointer grabbed. Owned solely by
     /// the scrollbar element.
     drag_offset: Option<Pixels>,
-    bounds: Bounds<Pixels>,
     /// Row the keyboard cursor is on.
     pub cursor: usize,
 }
@@ -85,9 +84,25 @@ impl DiffView {
             scroll: UniformListScrollHandle::new(),
             theme,
             drag_offset: None,
-            bounds: Bounds::default(),
             cursor: 0,
         }
+    }
+
+    /// The visible area of the list, as laid out on the last frame.
+    ///
+    /// Read from the scroll handle rather than stored: the handle already
+    /// tracks it, and a separate field has to be assigned from inside the
+    /// render pass — which is exactly what was missed before, leaving the
+    /// viewport permanently zero and the scrollbar permanently invisible.
+    ///
+    /// Zero-sized before the first layout. Every caller must tolerate that.
+    fn viewport(&self) -> Bounds<Pixels> {
+        self.scroll.0.borrow().base_handle.bounds()
+    }
+
+    /// Total height of all rows. Exact, because `uniform_list` is fixed-height.
+    fn content_height(&self) -> Pixels {
+        px(self.rows.len() as f32 * self.theme.line_height)
     }
 
     pub fn rows(&self) -> &[Row] {
@@ -105,9 +120,13 @@ impl DiffView {
             .scroll_to_item(self.cursor, gpui::ScrollStrategy::Top);
     }
 
-    /// How many rows fit on screen — the distance `ctrl-d` moves.
+    /// How many rows `ctrl-d` moves: half a screenful.
+    ///
+    /// Falls back to 1 before the first layout, when the viewport is still
+    /// zero-sized — moving one row is a sane thing to do on a keypress that
+    /// arrives that early, and it keeps the caller free of an `Option`.
     pub fn rows_per_half_page(&self) -> usize {
-        ((self.bounds.size.height / px(self.theme.line_height)) as usize / 2).max(1)
+        ((self.viewport().size.height / px(self.theme.line_height)) as usize / 2).max(1)
     }
 
     fn render_row(&self, ix: usize, theme: &Theme) -> impl IntoElement + use<> {
@@ -193,10 +212,9 @@ impl DiffView {
 
 impl Render for DiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = px(self.rows.len() as f32 * self.theme.line_height);
         let bar = scrollbar(
-            self.bounds,
-            content,
+            self.viewport(),
+            self.content_height(),
             self.scroll.0.borrow().base_handle.clone(),
             &self.theme,
             cx.entity(),
@@ -281,6 +299,51 @@ mod tests {
                 assert!(range.end <= text.len(), "range {range:?} overruns {text:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_freshly_built_view_reports_a_zero_viewport_rather_than_a_stale_one() {
+        // Regression: `bounds` used to be a field initialised to
+        // Bounds::default() and never assigned, so the viewport stayed zero
+        // *forever* and thumb() returned None on every frame — the scrollbar
+        // was never drawn. Reading it from the scroll handle means the value
+        // is zero only until the first layout, not permanently.
+        let files = parse(RUST);
+        let rows = build_rows(&files);
+        let view = DiffView::new(files, rows, Theme::dark());
+        assert_eq!(view.viewport().size.height, px(0.), "pre-layout");
+        assert_eq!(
+            view.rows_per_half_page(),
+            1,
+            "must fall back to 1 pre-layout, not panic or divide by zero"
+        );
+    }
+
+    #[test]
+    fn content_height_matches_the_row_count_times_the_line_height() {
+        // The scrollbar divides by this; if it disagrees with what
+        // uniform_list actually lays out, the thumb is the wrong size.
+        let files = parse(RUST);
+        let rows = build_rows(&files);
+        let theme = Theme::dark();
+        let expected = px(rows.len() as f32 * theme.line_height);
+        let view = DiffView::new(files, rows, theme);
+        assert_eq!(view.content_height(), expected);
+    }
+
+    #[test]
+    fn a_scrollbar_appears_once_the_viewport_is_smaller_than_the_content() {
+        // Proves the geometry the render pass feeds scrollbar(): with a real
+        // viewport there IS a thumb. Pairs with the pre-layout test above,
+        // which proves the old permanently-zero viewport yielded none.
+        let files = parse(RUST);
+        let rows = build_rows(&files);
+        let theme = Theme::dark();
+        let content = px(rows.len() as f32 * theme.line_height);
+        assert!(
+            crate::scrollbar::thumb(px(40.), content, px(0.)).is_some(),
+            "a viewport shorter than the content must produce a thumb"
+        );
     }
 
     #[test]

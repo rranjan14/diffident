@@ -14,7 +14,6 @@ actions!(
         HalfPageUp,
         Top,
         Bottom,
-        ToggleReviewed,
         NextReview,
         PrevReview,
     ]
@@ -22,9 +21,15 @@ actions!(
 
 /// The §8 keymap, restricted to what Phase 2 can service.
 ///
-/// Comment actions (`c`, `C`, `v`, `dd`) are deliberately absent: an action
-/// bound to a key but wired to nothing swallows the keystroke silently, which
-/// is worse for the user than the key simply not working yet.
+/// Comment actions (`c`, `C`, `v`, `dd`) and `r` (toggle reviewed) are
+/// deliberately absent: an action bound to a key but wired to nothing swallows
+/// the keystroke silently, which is worse for the user than the key simply not
+/// working yet. `r` was bound here before its feature existed and did exactly
+/// that — it returns in Phase 5 with the reviewed-flag model behind it.
+///
+/// Every action declared above must also have an `on_action` handler in
+/// `Workspace::render`. The test below guards the binding half; the wiring half
+/// is guarded in `workspace.rs`.
 ///
 /// `Diff` scopes the navigation keys so they do not fire while the rail has
 /// focus; the two review-switching keys are global on purpose.
@@ -40,7 +45,6 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-u", HalfPageUp, Some("Diff")),
         KeyBinding::new("g", Top, Some("Diff")),
         KeyBinding::new("shift-g", Bottom, Some("Diff")),
-        KeyBinding::new("r", ToggleReviewed, Some("Diff")),
         KeyBinding::new("ctrl-tab", NextReview, None),
         KeyBinding::new("ctrl-shift-tab", PrevReview, None),
     ]
@@ -158,6 +162,6 @@ mod tests {
         let before = keys.len();
         keys.dedup();
         assert_eq!(before, keys.len(), "a key is bound twice");
-        assert_eq!(before, 13, "every action in the actions! set needs a binding");
+        assert_eq!(before, 12, "every action in the actions! set needs a binding");
     }
 }

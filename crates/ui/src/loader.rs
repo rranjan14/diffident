@@ -16,11 +16,24 @@ pub struct RequestId {
 }
 
 impl RequestId {
-    /// Whether a result tagged with `self` should be thrown away given what is
-    /// selected now. `None` means nothing is selected, so there is nothing to
-    /// render into.
-    pub fn is_stale_for(&self, current: Option<&RequestId>) -> bool {
-        current != Some(self)
+    /// Whether a result tagged with `self` should be thrown away because the
+    /// reviewer is no longer looking at that review. `None` means nothing is
+    /// selected, so there is nothing to render into.
+    ///
+    /// Compares identity only, **not** `head_sha`. At request time the head is
+    /// unknown — it arrives with the response — so a head-sensitive check here
+    /// could only ever compare a result against itself. The SHA is carried for
+    /// the session key (§7) and rebase detection (§6), which are Phases 4 and 5.
+    ///
+    /// This does not order two in-flight loads of the *same* review, so if the
+    /// author force-pushes between them the older diff can win. Fixing that
+    /// needs a generation counter; it is not worth one until background refresh
+    /// exists in Phase 3, because today nothing re-fetches behind the user.
+    pub fn is_stale_for(&self, current: Option<&ReviewId>) -> bool {
+        match current {
+            Some(id) => id.repo != self.repo || id.number != self.number,
+            None => true,
+        }
     }
 }
 
@@ -144,48 +157,51 @@ mod tests {
         assert!(load_review(&GitHub::new(gh), &repo(), 7).is_err());
     }
 
-    #[test]
-    fn a_result_for_the_current_request_is_not_stale() {
-        let id = RequestId {
+    fn request(number: u32, head: &str) -> RequestId {
+        RequestId {
             repo: "o/r".into(),
-            number: 7,
-            head_sha: "abc".into(),
-        };
-        assert!(!id.is_stale_for(Some(&id)));
+            number,
+            head_sha: head.into(),
+        }
+    }
+
+    fn viewing(number: u32) -> ReviewId {
+        ReviewId {
+            repo: "o/r".into(),
+            number,
+        }
     }
 
     #[test]
-    fn a_result_whose_head_moved_is_stale() {
-        // The reviewer force-pushed while the diff was in flight. Rendering it
-        // would show a diff that no longer matches the PR.
-        let sent = RequestId {
-            repo: "o/r".into(),
-            number: 7,
-            head_sha: "abc".into(),
-        };
-        let now = RequestId {
-            head_sha: "def".into(),
-            ..sent.clone()
-        };
-        assert!(sent.is_stale_for(Some(&now)));
+    fn a_result_for_the_review_on_screen_is_not_stale() {
+        assert!(!request(7, "abc").is_stale_for(Some(&viewing(7))));
     }
 
     #[test]
     fn a_result_for_a_review_the_user_switched_away_from_is_stale() {
-        let sent = RequestId {
-            repo: "o/r".into(),
+        assert!(request(7, "abc").is_stale_for(Some(&viewing(9))));
+    }
+
+    #[test]
+    fn a_result_arriving_when_nothing_is_selected_is_stale() {
+        assert!(request(7, "abc").is_stale_for(None));
+    }
+
+    #[test]
+    fn a_result_from_another_repo_is_stale_even_at_the_same_pr_number() {
+        let other = ReviewId {
+            repo: "other/repo".into(),
             number: 7,
-            head_sha: "abc".into(),
         };
-        let now = RequestId {
-            number: 9,
-            ..sent.clone()
-        };
-        assert!(sent.is_stale_for(Some(&now)));
-        assert!(
-            sent.is_stale_for(None),
-            "nothing selected means nothing to render into"
-        );
+        assert!(request(7, "abc").is_stale_for(Some(&other)));
+    }
+
+    #[test]
+    fn the_head_sha_does_not_affect_staleness() {
+        // It is unknown at request time, so it can only ever compare a result
+        // against itself. It is carried for the session key and rebase
+        // detection, not for this guard.
+        assert!(!request(7, "def").is_stale_for(Some(&viewing(7))));
     }
 
     #[test]

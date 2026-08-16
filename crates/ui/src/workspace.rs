@@ -107,9 +107,9 @@ impl Workspace {
 
     /// Land a fetched diff, unless the reviewer has moved on (§5).
     fn apply(&mut self, number: u32, loaded: LoadedReview, cx: &mut Context<Self>) {
-        let current = self.active.and_then(|ix| self.reviews.get(ix));
-        if current.map(|r| r.id.number) != Some(number) {
-            return; // stale: the reviewer switched away while this was in flight
+        let current = self.active.and_then(|ix| self.reviews.get(ix)).map(|r| &r.id);
+        if loaded.request.is_stale_for(current) {
+            return; // the reviewer switched away while this was in flight
         }
         if let Some(r) = self.reviews.iter_mut().find(|r| r.id.number == number) {
             r.state = LoadState::Ready {
@@ -131,6 +131,30 @@ impl Workspace {
             view.scroll_to(next);
             cx.notify();
         });
+    }
+
+    /// `ctrl-d` / `ctrl-u`. The distance depends on the laid-out viewport, so it
+    /// is read from the view rather than passed in.
+    fn half_page(&mut self, down: bool, cx: &mut Context<Self>) {
+        let Some(diff) = self.diff.clone() else {
+            return;
+        };
+        let distance = diff.read(cx).rows_per_half_page();
+        self.move_cursor(move |rows, ix| half_page(rows, ix, distance, down), cx);
+    }
+
+    /// `ctrl-tab` / `ctrl-shift-tab`: move to the adjacent review in the rail.
+    ///
+    /// Wraps, unlike diff navigation: the rail is a short ring the reviewer is
+    /// cycling through, not a long document they can lose their place in.
+    fn step_review(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.reviews.is_empty() {
+            return;
+        }
+        let len = self.reviews.len() as isize;
+        let from = self.active.unwrap_or(0) as isize;
+        let next = (from + delta).rem_euclid(len) as usize;
+        self.select(next, cx);
     }
 }
 
@@ -222,6 +246,10 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &Bottom, _, cx| {
                 this.move_cursor(|rows, _| rows.len().saturating_sub(1), cx)
             }))
+            .on_action(cx.listener(|this, _: &HalfPageDown, _, cx| this.half_page(true, cx)))
+            .on_action(cx.listener(|this, _: &HalfPageUp, _, cx| this.half_page(false, cx)))
+            .on_action(cx.listener(|this, _: &NextReview, _, cx| this.step_review(1, cx)))
+            .on_action(cx.listener(|this, _: &PrevReview, _, cx| this.step_review(-1, cx)))
             .flex()
             .size_full()
             .bg(theme.bg)
@@ -280,5 +308,56 @@ impl Render for Workspace {
                     .child("select a review")
                     .into_any_element(),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every action declared in `navigate.rs` must have an `on_action` handler
+    /// here.
+    ///
+    /// GPUI binds keys to actions and actions to handlers in two separate
+    /// places, and nothing links them: an action with a key binding but no
+    /// handler compiles, passes every other test, and silently swallows the
+    /// keystroke at runtime. Phase 2 shipped five such keys — `ctrl-d`,
+    /// `ctrl-u`, `r`, `ctrl-tab`, `ctrl-shift-tab` — and no test noticed.
+    ///
+    /// Reading the source is crude, but the alternative is a windowed test, and
+    /// the thing being checked is precisely that two source files agree.
+    #[test]
+    fn every_declared_action_is_wired_to_a_handler() {
+        let navigate = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/navigate.rs"));
+        let workspace = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/workspace.rs"));
+
+        let declared: Vec<&str> = navigate
+            .split_once("actions!(")
+            .expect("navigate.rs declares an actions! set")
+            .1
+            .split_once('[')
+            .expect("the actions! set is bracketed")
+            .1
+            .split_once(']')
+            .expect("the actions! set is closed")
+            .0
+            .split(',')
+            .map(str::trim)
+            .filter(|s| s.chars().next().is_some_and(char::is_uppercase))
+            .collect();
+
+        assert!(
+            declared.len() >= 12,
+            "expected the full action set, parsed {declared:?}"
+        );
+
+        let unwired: Vec<&&str> = declared
+            .iter()
+            .filter(|a| !workspace.contains(&format!("&{a},")))
+            .collect();
+
+        assert!(
+            unwired.is_empty(),
+            "these actions are bound to keys but have no on_action handler, so \
+             their keystrokes are silently swallowed: {unwired:?}"
+        );
     }
 }
