@@ -1,7 +1,8 @@
 use diffident_model::comment::Comment;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 /// Identifies a stored session: one file per pull request.
 ///
@@ -48,6 +49,70 @@ impl Session {
     }
 }
 
+/// How long a lock may sit before another writer assumes its owner died.
+///
+/// A review app that refuses to save until you hunt down a stray file is worse
+/// than one that occasionally races, so a stale lock is reclaimed rather than
+/// respected forever.
+const STALE_LOCK: Duration = Duration::from_secs(10);
+
+/// Held for the duration of one write, so two diffident windows on the same PR
+/// cannot interleave (§7).
+///
+/// `create_new` is the atomic test-and-set — exactly one caller can create a
+/// given path, on every platform, with no dependency.
+struct WriteLock {
+    path: PathBuf,
+}
+
+impl WriteLock {
+    /// Take the lock, reclaiming one left behind by a crashed process.
+    ///
+    /// Returns `None` when another writer genuinely holds it. The caller drops
+    /// the save rather than blocking: this runs on a keystroke, and freezing
+    /// the window because another instance is mid-write would be the larger
+    /// harm — the next toggle writes again anyway.
+    fn acquire(path: &Path) -> Option<Self> {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(_) => Some(Self {
+                path: path.to_path_buf(),
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let stale = std::fs::metadata(path)
+                    .and_then(|m| m.modified())
+                    .map(|t| SystemTime::now().duration_since(t).unwrap_or_default() > STALE_LOCK)
+                    .unwrap_or(false);
+                if stale {
+                    let _ = std::fs::remove_file(path);
+                    // One retry only. If someone else won the race, they hold
+                    // it legitimately and we are done.
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)
+                        .ok()
+                        .map(|_| Self {
+                            path: path.to_path_buf(),
+                        })
+                } else {
+                    None
+                }
+            }
+            Err(_) => None,
+        }
+    }
+}
+
+impl Drop for WriteLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// Draft storage rooted at a directory.
 pub struct Store {
     root: PathBuf,
@@ -79,15 +144,42 @@ impl Store {
             .unwrap_or_default()
     }
 
-    /// Write a session atomically.
+    /// Where this key's lock lives while a write is in progress.
+    pub fn lock_path_for(&self, key: &SessionKey) -> PathBuf {
+        self.path_for(key).with_extension("lock")
+    }
+
+    /// The temp file this process writes through.
+    ///
+    /// Carries the process id: two instances sharing one temp path can
+    /// interleave their writes and then publish each other's half-written
+    /// bytes, which the rename would make look atomic and correct.
+    fn temp_path_for(&self, key: &SessionKey) -> PathBuf {
+        self.path_for(key)
+            .with_extension(format!("{}.tmp", std::process::id()))
+    }
+
+    /// Write a session atomically, under a lock (§7).
     ///
     /// Temp file then rename, so a crash mid-write leaves the previous session
     /// intact rather than a truncated file. The temp file must be a sibling —
     /// `rename` is only atomic within one filesystem.
+    ///
+    /// The lock serialises writers; it does **not** merge them. Two windows on
+    /// the same PR still resolve last-write-wins, because a mark and an
+    /// *un*mark are indistinguishable once in memory — merging would resurrect
+    /// files the reviewer deliberately unmarked, which is no better than losing
+    /// ones they marked. Fixing that needs per-mark tombstones and is not worth
+    /// it for a single-user desktop app.
     pub fn save(&self, key: &SessionKey, session: &Session) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.root)?;
+        let Some(_lock) = WriteLock::acquire(&self.lock_path_for(key)) else {
+            // Another window is mid-write. Skipping is safe: marks are still
+            // correct in memory and the next toggle writes again.
+            return Ok(());
+        };
         let final_path = self.path_for(key);
-        let tmp = final_path.with_extension("json.tmp");
+        let tmp = self.temp_path_for(key);
         std::fs::write(&tmp, serde_json::to_vec_pretty(session)?)?;
         std::fs::rename(&tmp, &final_path)
     }
@@ -267,5 +359,138 @@ mod round_trip_tests {
         let mut after = Reviewed::new();
         after.restore(7, store.load(&key).reviewed);
         assert!(!after.is_reviewed(7, "a.rs", 111));
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    fn key() -> SessionKey {
+        SessionKey {
+            repo: "o/r".into(),
+            pr: 7,
+        }
+    }
+
+    #[test]
+    fn a_second_writer_cannot_take_a_held_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.lock");
+        let held = WriteLock::acquire(&path).expect("first writer takes it");
+        assert!(WriteLock::acquire(&path).is_none(), "second must be refused");
+        drop(held);
+    }
+
+    #[test]
+    fn a_lock_is_released_when_its_guard_drops() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.lock");
+        drop(WriteLock::acquire(&path).expect("taken"));
+        assert!(!path.exists(), "the lock file must not outlive the guard");
+        assert!(WriteLock::acquire(&path).is_some(), "and is takeable again");
+    }
+
+    #[test]
+    fn a_stale_lock_left_by_a_crashed_process_is_reclaimed() {
+        // Otherwise one crash means the reviewer silently stops saving forever.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.lock");
+        std::fs::write(&path, b"").unwrap();
+        let long_ago = SystemTime::now() - STALE_LOCK - Duration::from_secs(60);
+        filetime_set(&path, long_ago);
+        assert!(WriteLock::acquire(&path).is_some(), "stale lock must be reclaimed");
+    }
+
+    #[test]
+    fn a_fresh_lock_is_not_mistaken_for_a_stale_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.lock");
+        let _held = WriteLock::acquire(&path).unwrap();
+        assert!(WriteLock::acquire(&path).is_none());
+    }
+
+    #[test]
+    fn each_process_writes_through_its_own_temp_file() {
+        // Two instances sharing one temp path can interleave their writes and
+        // then publish each other's half-written bytes.
+        let store = Store::new("/tmp/whatever");
+        let tmp = store.temp_path_for(&key());
+        assert!(
+            tmp.to_string_lossy().contains(&std::process::id().to_string()),
+            "temp path must be process-unique, got {tmp:?}"
+        );
+    }
+
+    #[test]
+    fn save_leaves_no_lock_or_temp_file_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        store.save(&key(), &Session::default()).unwrap();
+        let stray: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".lock") || n.contains(".tmp"))
+            .collect();
+        assert!(stray.is_empty(), "left behind: {stray:?}");
+    }
+
+    #[test]
+    fn save_honours_a_lock_another_writer_holds() {
+        // The load-bearing one: with the lock removed from save() this fails,
+        // because save writes straight over the other writer's file.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let _held = WriteLock::acquire(&store.lock_path_for(&key())).unwrap();
+
+        assert!(
+            store.save(&key(), &Session::default()).is_ok(),
+            "skipping is not an error — this runs on a keystroke, and blocking \
+             the window would be worse than a write the next toggle repeats"
+        );
+        assert!(
+            !store.path_for(&key()).exists(),
+            "save must not write while another writer holds the lock"
+        );
+    }
+
+    #[test]
+    fn concurrent_writers_always_publish_parseable_json() {
+        // An invariant, not a regression test. The hazard the process-unique
+        // temp path removes — one writer renaming its tmp into place while
+        // another is mid-write to the same inode — needs timing this cannot
+        // force: removing the fix does not make this fail. It is kept because
+        // the invariant is worth pinning, and named so it does not claim more
+        // than it proves.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let big = Session {
+            reviewed: (0..5_000)
+                .map(|i| (format!("some/deep/path/to/file_{i}.rs"), i as u64))
+                .collect(),
+            ..Session::default()
+        };
+
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                s.spawn(|| {
+                    for _ in 0..10 {
+                        let _ = store.save(&key(), &big);
+                    }
+                });
+            }
+        });
+
+        // Whatever landed must be complete, parseable JSON — never a mix.
+        let raw = std::fs::read_to_string(store.path_for(&key())).expect("a file was written");
+        let parsed: Session = serde_json::from_str(&raw).expect("must not be torn");
+        assert_eq!(parsed.reviewed.len(), 5_000);
+    }
+
+    /// Set a file's mtime without pulling in the `filetime` crate.
+    fn filetime_set(path: &Path, when: SystemTime) {
+        let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        f.set_modified(when).unwrap();
     }
 }
