@@ -4,6 +4,8 @@
 //! the headless crates (diff, forge, session, highlight) use these types without
 //! pulling a UI toolkit into their build or their tests.
 
+pub mod reviewed;
+
 /// Identifies a review for the life of the app.
 ///
 /// `(repo, number)` is stable; the head SHA is not, so it lives in `LoadState`
