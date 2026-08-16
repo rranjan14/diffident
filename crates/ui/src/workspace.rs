@@ -13,6 +13,7 @@ use crate::theme::Theme;
 use diffident_forge::{Repo, gh::Gh, github::GitHub};
 use diffident_model::{LoadState, Review};
 use diffident_model::reviewed::Reviewed;
+use diffident_forge::stack::next_in_stack;
 use gpui::{
     Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString,
     Window, div, prelude::*, px,
@@ -240,6 +241,56 @@ impl Workspace {
         }
     }
 
+    /// The row of the first unread file in the active review, if any.
+    fn first_unreviewed_row(&self, cx: &Context<Self>) -> Option<usize> {
+        let (number, diff) = (self.active_number()?, self.diff()?);
+        let view = diff.read(cx);
+        view.rows().iter().position(|row| {
+            row.file_ix()
+                .and_then(|ix| view.files().get(ix))
+                .is_some_and(|f| !self.reviewed.is_reviewed(number, f.display_path()))
+        })
+    }
+
+    /// `tab`: go to the next unread file, crossing into the next PR of this
+    /// stack when the current one is fully read.
+    ///
+    /// Wraps within the stack and stops if it comes all the way round, so a
+    /// fully-read stack does nothing rather than looping forever. Never leaves
+    /// the stack: being done here must not drag the reviewer into an unrelated
+    /// PR.
+    fn next_unreviewed(&mut self, cx: &mut Context<Self>) {
+        if let Some(row) = self.first_unreviewed_row(cx) {
+            let view_row = self.diff().map(|d| d.read(cx).cursor);
+            if view_row != Some(row) {
+                self.move_cursor(move |_, _| row, cx);
+                return;
+            }
+        }
+
+        let Some(from) = self.active else { return };
+        let depths: Vec<usize> = self.reviews.iter().map(|r| r.depth).collect();
+        let mut at = from;
+        for _ in 0..depths.len() {
+            let Some(next) = next_in_stack(&depths, at) else {
+                return;
+            };
+            if next == from {
+                return; // all the way round; nothing unread in this stack
+            }
+            at = next;
+            let has_unread = match &self.reviews[at].state {
+                LoadState::Ready { .. } => self.unreviewed_count(&self.reviews[at]) > 0,
+                // Never opened, so nothing is marked read — by definition unread.
+                _ => true,
+            };
+            if has_unread {
+                self.select(at, cx);
+                return;
+            }
+        }
+    }
+
     /// `ctrl-d` / `ctrl-u`. The distance depends on the laid-out viewport, so it
     /// is read from the view rather than passed in.
     fn half_page(&mut self, down: bool, cx: &mut Context<Self>) {
@@ -393,6 +444,7 @@ impl Render for Workspace {
                 this.move_cursor(|rows, _| rows.len().saturating_sub(1), cx)
             }))
             .on_action(cx.listener(|this, _: &ToggleReviewed, _, cx| this.toggle_reviewed(cx)))
+            .on_action(cx.listener(|this, _: &NextUnreviewed, _, cx| this.next_unreviewed(cx)))
             .on_action(cx.listener(|this, _: &HalfPageDown, _, cx| this.half_page(true, cx)))
             .on_action(cx.listener(|this, _: &HalfPageUp, _, cx| this.half_page(false, cx)))
             .on_action(cx.listener(|this, _: &NextReview, _, cx| this.step_review(1, cx)))
@@ -525,6 +577,50 @@ mod tests {
         );
     }
 
+    use diffident_forge::stack::next_in_stack;
+    /// The rule `next_unreviewed` follows once the current PR is exhausted.
+    /// Extracted here so the choice is testable without a window; the action
+    /// handler does the loading.
+    fn next_review_to_open(depths: &[usize], from: usize, unread: &[usize]) -> Option<usize> {
+        let mut at = from;
+        for _ in 0..depths.len() {
+            at = next_in_stack(depths, at)?;
+            if at == from {
+                return None; // all the way round, nothing unread
+            }
+            if unread[at] > 0 {
+                return Some(at);
+            }
+        }
+        None
+    }
+    #[test]
+    fn exhausting_a_pr_moves_to_the_next_one_in_the_same_stack() {
+        let depths = [0, 1, 2];
+        let unread = [0, 3, 1];
+        assert_eq!(next_review_to_open(&depths, 0, &unread), Some(1));
+    }
+    #[test]
+    fn a_fully_read_neighbour_is_skipped() {
+        let depths = [0, 1, 2];
+        let unread = [0, 0, 4];
+        assert_eq!(next_review_to_open(&depths, 0, &unread), Some(2));
+    }
+    #[test]
+    fn a_fully_read_stack_has_nowhere_to_go() {
+        let depths = [0, 1, 2];
+        let unread = [0, 0, 0];
+        assert_eq!(next_review_to_open(&depths, 0, &unread), None);
+    }
+    #[test]
+    fn navigation_never_leaves_the_stack_for_an_unrelated_pr() {
+        // #4 (index 3) is a separate stack with plenty unread. Being done with
+        // this stack must not drag the reviewer into someone else's PR.
+        let depths = [0, 1, 0];
+        let unread = [0, 0, 9];
+        assert_eq!(next_review_to_open(&depths, 0, &unread), None);
+    }
+    /// Every action declared in `navigate.rs` must have an `on_action` handler
     /// Every action declared in `navigate.rs` must have an `on_action` handler
     /// here.
     ///
