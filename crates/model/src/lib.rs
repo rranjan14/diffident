@@ -30,14 +30,13 @@ pub enum LoadState {
     Ready {
         added: u32,
         removed: u32,
-        /// Every path the PR touches, in diff order.
+        /// Every file the PR touches, in diff order, with the fingerprint of
+        /// its contents at the time it was loaded (§7).
         ///
         /// Lives here rather than on the diff because the diff is evicted from
         /// the resident set while the rail badge and cross-stack navigation
-        /// still need to know what the PR contains. That "we have paths" and
-        /// "we have loaded it" are the same condition is deliberate: an
-        /// unloaded PR has no count to show, rather than a guessed one.
-        paths: Vec<String>,
+        /// still need to know what the PR contains.
+        files: Vec<(String, u64)>,
     },
     Failed {
         message: String,

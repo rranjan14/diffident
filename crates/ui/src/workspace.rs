@@ -132,8 +132,8 @@ impl Workspace {
     /// file list yet — which the rail renders as no badge at all.
     fn unreviewed_count(&self, review: &Review) -> usize {
         match &review.state {
-            LoadState::Ready { paths, .. } => {
-                self.reviewed.unreviewed_count(review.id.number, paths)
+            LoadState::Ready { files, .. } => {
+                self.reviewed.unreviewed_count(review.id.number, files)
             }
             _ => 0,
         }
@@ -214,10 +214,10 @@ impl Workspace {
             r.state = LoadState::Ready {
                 added: loaded.added,
                 removed: loaded.removed,
-                paths: loaded
+                files: loaded
                     .files
                     .iter()
-                    .map(|f| f.display_path().to_string())
+                    .map(|f| (f.display_path().to_string(), f.content_hash()))
                     .collect(),
             };
         }
@@ -261,16 +261,16 @@ impl Workspace {
         let (Some(number), Some(diff)) = (self.active_number(), self.diff()) else {
             return;
         };
-        let path = {
+        let mark = {
             let view = diff.read(cx);
             view.rows()
                 .get(view.cursor)
                 .and_then(|row| row.file_ix())
                 .and_then(|ix| view.files().get(ix))
-                .map(|f| f.display_path().to_string())
+                .map(|f| (f.display_path().to_string(), f.content_hash()))
         };
-        if let Some(path) = path {
-            self.reviewed.toggle(number, &path);
+        if let Some((path, hash)) = mark {
+            self.reviewed.toggle(number, &path, hash);
             cx.notify();
         }
     }
@@ -287,9 +287,9 @@ impl Workspace {
             let target = {
                 let view = diff.read(cx);
                 next_unreviewed_row(view.rows(), view.cursor, |file_ix| {
-                    view.files()
-                        .get(file_ix)
-                        .is_some_and(|f| !self.reviewed.is_reviewed(number, f.display_path()))
+                    view.files().get(file_ix).is_some_and(|f| {
+                        !self.reviewed.is_reviewed(number, f.display_path(), f.content_hash())
+                    })
                 })
             };
             if let Some(row) = target {
@@ -407,10 +407,13 @@ impl Render for Workspace {
                 let view = diff.read(cx);
                 file_entries(view.files(), view.rows())
             };
-            for entry in entries {
-                let is_read = self
-                    .active_number()
-                    .is_some_and(|n| self.reviewed.is_reviewed(n, &entry.path));
+            for (ix, entry) in entries.into_iter().enumerate() {
+                let entry_file = diff.read(cx).files().get(ix);
+                let is_read = self.active_number().is_some_and(|n| {
+                    entry_file
+                        .map(|f| self.reviewed.is_reviewed(n, &entry.path, f.content_hash()))
+                        .unwrap_or(false)
+                });
                 let (row_ix, diff) = (entry.row_ix, diff.clone());
                 file_rows.push(
                     div()
