@@ -87,6 +87,8 @@ pub fn list_reviews<F: Forge>(forge: &F, repo: &Repo) -> Result<Vec<Review>, GhE
                 branch: pr.head_ref_name.clone(),
                 depth: entry.depth,
                 is_draft: pr.is_draft,
+                head_sha: pr.head_ref_oid.clone(),
+                rebased: false,
                 state: LoadState::Idle,
             })
         })
@@ -163,10 +165,10 @@ mod tests {
 
     #[test]
     fn list_reviews_returns_prs_in_stack_order_with_their_depth() {
-        let list_args = "pr list --repo o/r --state open --limit 100 --json number,title,headRefName,baseRefName,isDraft,url,isCrossRepository";
+        let list_args = "pr list --repo o/r --state open --limit 100 --json number,title,headRefName,baseRefName,isDraft,url,isCrossRepository,headRefOid";
         let json = r#"[
-            {"number":1,"title":"base","headRefName":"a","baseRefName":"main","isDraft":false,"url":"u","isCrossRepository":false},
-            {"number":2,"title":"top","headRefName":"b","baseRefName":"a","isDraft":false,"url":"u","isCrossRepository":false}
+            {"number":1,"title":"base","headRefName":"a","baseRefName":"main","isDraft":false,"url":"u","isCrossRepository":false,"headRefOid":"abc"},
+            {"number":2,"title":"top","headRefName":"b","baseRefName":"a","isDraft":false,"url":"u","isCrossRepository":false,"headRefOid":"abc"}
         ]"#;
         let gh = FakeGh::new().with(list_args, json);
         let reviews = list_reviews(&GitHub::new(gh), &repo()).unwrap();
@@ -174,5 +176,15 @@ mod tests {
         assert_eq!((reviews[0].id.number, reviews[0].depth), (1, 0));
         assert_eq!((reviews[1].id.number, reviews[1].depth), (2, 1));
         assert_eq!(reviews[0].id.repo, "o/r");
+    }
+
+    #[test]
+    fn a_listed_review_carries_the_head_sha_so_a_force_push_can_be_noticed() {
+        let list_args = "pr list --repo o/r --state open --limit 100 --json number,title,headRefName,baseRefName,isDraft,url,isCrossRepository,headRefOid";
+        let json = r#"[{"number":1,"title":"t","headRefName":"a","baseRefName":"main","isDraft":false,"url":"u","isCrossRepository":false,"headRefOid":"deadbeef"}]"#;
+        let gh = FakeGh::new().with(list_args, json);
+        let reviews = list_reviews(&GitHub::new(gh), &repo()).unwrap();
+        assert_eq!(reviews[0].head_sha, "deadbeef");
+        assert!(!reviews[0].rebased, "a first listing is never a rebase");
     }
 }

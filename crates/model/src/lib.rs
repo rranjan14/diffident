@@ -4,6 +4,8 @@
 //! the headless crates (diff, forge, session, highlight) use these types without
 //! pulling a UI toolkit into their build or their tests.
 
+pub mod reviewed;
+
 /// Identifies a review for the life of the app.
 ///
 /// `(repo, number)` is stable; the head SHA is not, so it lives in `LoadState`
@@ -24,7 +26,18 @@ pub enum LoadState {
     /// Listed in the rail, never opened.
     Idle,
     Loading,
-    Ready { added: u32, removed: u32 },
+    Ready {
+        added: u32,
+        removed: u32,
+        /// Every path the PR touches, in diff order.
+        ///
+        /// Lives here rather than on the diff because the diff is evicted from
+        /// the resident set while the rail badge and cross-stack navigation
+        /// still need to know what the PR contains. That "we have paths" and
+        /// "we have loaded it" are the same condition is deliberate: an
+        /// unloaded PR has no count to show, rather than a guessed one.
+        paths: Vec<String>,
+    },
     Failed {
         message: String,
     },
@@ -39,6 +52,14 @@ pub struct Review {
     /// Rail indent from stack detection (§6). 0 for a root PR.
     pub depth: usize,
     pub is_draft: bool,
+    /// The commit this review was listed at.
+    pub head_sha: String,
+    /// The head moved since we loaded this review's diff (§6).
+    ///
+    /// A flag, not an action: the reviewed marks are deliberately left alone.
+    /// Phase 5's `content_hash` can tell which files genuinely changed; until
+    /// then, telling the reviewer beats silently discarding their progress.
+    pub rebased: bool,
     pub state: LoadState,
 }
 
@@ -64,6 +85,8 @@ mod tests {
             branch: "feat/add-search".into(),
             depth: 0,
             is_draft: false,
+            head_sha: String::new(),
+            rebased: false,
             state: LoadState::Idle,
         }
     }

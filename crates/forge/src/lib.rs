@@ -37,6 +37,11 @@ pub struct PrSummary {
     /// head branch is `main` would otherwise look like the parent of every
     /// PR targeting `main`.
     pub is_cross_repository: bool,
+    /// Head commit SHA, as of this listing.
+    ///
+    /// Free on `pr list` — measured at no change to a 100-PR call — and the
+    /// only way to notice a force-push without re-fetching every diff (§6).
+    pub head_ref_oid: String,
 }
 
 /// The full PR shape, fetched only when a review is opened.

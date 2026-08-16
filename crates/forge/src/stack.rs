@@ -81,6 +81,40 @@ fn walk(
     }
 }
 
+/// The contiguous run of rail entries forming one stack.
+///
+/// `stack_order` emits a root at depth 0 followed immediately by its
+/// dependents at greater depth, so a stack is exactly "this depth-0 entry and
+/// every entry after it until the next depth-0 entry". Returned as a range so
+/// callers can walk it in either direction without copying.
+pub fn stack_bounds(depths: &[usize], ix: usize) -> std::ops::Range<usize> {
+    if ix >= depths.len() {
+        return 0..0;
+    }
+    let start = depths[..=ix].iter().rposition(|d| *d == 0).unwrap_or(0);
+    let end = depths[start + 1..]
+        .iter()
+        .position(|d| *d == 0)
+        .map(|offset| start + 1 + offset)
+        .unwrap_or(depths.len());
+    start..end
+}
+
+/// The next entry to visit after `from`, wrapping within the stack.
+///
+/// Wraps rather than stopping: a reviewer working a stack wants to keep
+/// cycling until everything is read, and stopping at the last member would
+/// make them navigate back by hand.
+pub fn next_in_stack(depths: &[usize], from: usize) -> Option<usize> {
+    let bounds = stack_bounds(depths, from);
+    if bounds.is_empty() {
+        return None;
+    }
+    let len = bounds.end - bounds.start;
+    let offset = from - bounds.start;
+    Some(bounds.start + (offset + 1) % len)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,6 +128,7 @@ mod tests {
             is_draft: false,
             url: String::new(),
             is_cross_repository: false,
+            head_ref_oid: String::new(),
         }
     }
 
@@ -181,5 +216,73 @@ mod tests {
         // always names a branch here, so it can legitimately be a child.
         let prs = [pr(1, "a", "main"), fork_pr(2, "b", "a")];
         assert_eq!(shape(&stack_order(&prs)), vec![(1, 0), (2, 1)]);
+    }
+}
+
+#[cfg(test)]
+mod stack_walk_tests {
+    use super::*;
+
+    // Two stacks and a loner:
+    //   0: #1 root      depth 0
+    //   1: #2 on #1     depth 1
+    //   2: #3 on #2     depth 2
+    //   3: #4 alone     depth 0
+    //   4: #5 root      depth 0
+    //   5: #6 on #5     depth 1
+    const DEPTHS: [usize; 6] = [0, 1, 2, 0, 0, 1];
+
+    #[test]
+    fn a_three_deep_stack_is_one_group() {
+        assert_eq!(stack_bounds(&DEPTHS, 0), 0..3);
+        assert_eq!(stack_bounds(&DEPTHS, 1), 0..3);
+        assert_eq!(stack_bounds(&DEPTHS, 2), 0..3, "found from any member");
+    }
+
+    #[test]
+    fn a_pr_with_no_dependents_is_a_stack_of_one() {
+        assert_eq!(stack_bounds(&DEPTHS, 3), 3..4);
+    }
+
+    #[test]
+    fn a_later_stack_does_not_absorb_the_earlier_one() {
+        assert_eq!(stack_bounds(&DEPTHS, 5), 4..6);
+    }
+
+    #[test]
+    fn walking_a_stack_visits_every_member_then_wraps() {
+        let mut seen = vec![0];
+        let mut at = 0;
+        for _ in 0..3 {
+            at = next_in_stack(&DEPTHS, at).unwrap();
+            seen.push(at);
+        }
+        assert_eq!(seen, vec![0, 1, 2, 0], "three members, then back to the root");
+    }
+
+    #[test]
+    fn walking_never_leaves_the_stack() {
+        // From the middle of the first stack we must never reach #4 or #5.
+        let mut at = 1;
+        for _ in 0..10 {
+            at = next_in_stack(&DEPTHS, at).unwrap();
+            assert!((0..3).contains(&at), "escaped the stack to {at}");
+        }
+    }
+
+    #[test]
+    fn a_lone_pr_walks_to_itself() {
+        assert_eq!(next_in_stack(&DEPTHS, 3), Some(3));
+    }
+
+    #[test]
+    fn an_empty_rail_has_nowhere_to_go() {
+        assert_eq!(next_in_stack(&[], 0), None);
+        assert_eq!(stack_bounds(&[], 0), 0..0);
+    }
+
+    #[test]
+    fn an_out_of_range_index_is_not_a_panic() {
+        assert_eq!(next_in_stack(&DEPTHS, 99), None);
     }
 }

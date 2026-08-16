@@ -190,6 +190,25 @@ mod tests {
     }
 
     #[test]
+    fn every_row_but_a_spacer_knows_its_file() {
+        let text = format!("{ONE_HUNK}diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1,1 +1,1 @@\n z\n");
+        let files = parse(&text);
+        let rows = build_rows(&files);
+        for row in &rows {
+            match row {
+                Row::Spacer => assert_eq!(row.file_ix(), None),
+                _ => {
+                    let ix = row.file_ix().expect("non-spacer rows have a file");
+                    assert!(ix < files.len(), "file_ix must index into files");
+                }
+            }
+        }
+        // The second file's rows report index 1, not 0.
+        let second = rows.iter().position(|r| *r == Row::FileHeader { file_ix: 1 }).unwrap();
+        assert_eq!(rows[second].file_ix(), Some(1));
+    }
+
+    #[test]
     fn an_empty_diff_produces_no_rows() {
         assert!(build_rows(&[]).is_empty());
     }
