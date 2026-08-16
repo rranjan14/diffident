@@ -12,6 +12,8 @@ pub struct Residency<T> {
     /// HashMap+order pair: it holds four things, so a linear scan beats hashing
     /// and the whole policy stays readable at a glance.
     resident: Vec<(u32, T)>,
+    /// Keys with a fetch in flight.
+    pending: Vec<u32>,
     cap: usize,
 }
 
@@ -19,6 +21,7 @@ impl<T> Residency<T> {
     pub fn new(cap: usize) -> Self {
         Self {
             resident: Vec::new(),
+            pending: Vec::new(),
             cap,
         }
     }
@@ -42,11 +45,35 @@ impl<T> Residency<T> {
 
     /// Insert as most-recently-used, evicting from the front past the cap.
     pub fn admit(&mut self, key: u32, value: T) {
+        self.pending.retain(|k| *k != key);
         self.resident.retain(|(k, _)| *k != key);
         self.resident.push((key, value));
         while self.resident.len() > self.cap {
             self.resident.remove(0);
         }
+    }
+
+    /// Whether the caller should start a fetch for `key`.
+    ///
+    /// False when the value is already resident or a fetch is already running —
+    /// clicking a still-loading review must not start a second identical fetch,
+    /// which costs seconds and races the first one to land.
+    pub fn begin_fetch(&mut self, key: u32) -> bool {
+        if self.get(key).is_some() || self.pending.contains(&key) {
+            return false;
+        }
+        self.pending.push(key);
+        true
+    }
+
+    /// Whether a fetch for `key` is running.
+    pub fn is_fetching(&self, key: u32) -> bool {
+        self.pending.contains(&key)
+    }
+
+    /// Clear the in-flight mark for a fetch that failed, so a retry is possible.
+    pub fn abandon_fetch(&mut self, key: u32) {
+        self.pending.retain(|k| *k != key);
     }
 
     /// Resident keys, oldest first. For tests and diagnostics.
@@ -91,6 +118,38 @@ mod tests {
         assert_eq!(r.get(1), None, "1 was evicted");
     }
 
+    #[test]
+    fn a_second_click_while_loading_does_not_start_another_fetch() {
+        let mut r = residency();
+        assert!(r.begin_fetch(7), "first click starts the fetch");
+        assert!(!r.begin_fetch(7), "second click must not");
+        assert!(r.is_fetching(7));
+    }
+
+    #[test]
+    fn an_already_resident_review_never_starts_a_fetch() {
+        let mut r = residency();
+        r.admit(7, 'a');
+        assert!(!r.begin_fetch(7));
+    }
+
+    #[test]
+    fn admitting_a_result_clears_its_in_flight_mark() {
+        let mut r = residency();
+        r.begin_fetch(7);
+        r.admit(7, 'a');
+        assert!(!r.is_fetching(7));
+        assert!(!r.begin_fetch(7), "now resident, so still no fetch");
+    }
+
+    #[test]
+    fn a_failed_fetch_can_be_retried() {
+        let mut r = residency();
+        r.begin_fetch(7);
+        r.abandon_fetch(7);
+        assert!(!r.is_fetching(7));
+        assert!(r.begin_fetch(7), "a failure must not block retrying forever");
+    }
     #[test]
     fn re_admitting_replaces_rather_than_duplicating() {
         // A refetch must not leave two entries, or the stale one can be served

@@ -99,7 +99,8 @@ impl Workspace {
             return;
         };
         self.active = Some(ix);
-        let (repo, number) = (self.repo.clone(), review.id.number);
+        let number = review.id.number;
+        let repo = self.repo.clone();
 
         // Already resident: promote to most-recently-used and skip the fetch
         // entirely. This is what makes switching between stacked PRs instant.
@@ -108,7 +109,16 @@ impl Workspace {
             return;
         }
 
-        review.state = LoadState::Loading;
+        // Already loading: make it active and let the in-flight fetch land.
+        // Starting a second one would cost seconds and race the first.
+        if !self.residency.begin_fetch(number) {
+            cx.notify();
+            return;
+        }
+
+        if let Some(r) = self.reviews.get_mut(ix) {
+            r.state = LoadState::Loading;
+        }
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -120,6 +130,7 @@ impl Workspace {
                 match loaded {
                     Ok(loaded) => this.apply(number, loaded, cx),
                     Err(e) => {
+                        this.residency.abandon_fetch(number);
                         if let Some(r) = this.reviews.iter_mut().find(|r| r.id.number == number) {
                             r.state = LoadState::Failed {
                                 message: e.to_string(),
