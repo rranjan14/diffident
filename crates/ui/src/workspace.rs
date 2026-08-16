@@ -93,6 +93,17 @@ impl Workspace {
         Some(self.active.and_then(|ix| self.reviews.get(ix))?.id.number)
     }
 
+    /// How many files remain unread in one review, or 0 when we do not know its
+    /// file list yet — which the rail renders as no badge at all.
+    fn unreviewed_count(&self, review: &Review) -> usize {
+        match &review.state {
+            LoadState::Ready { paths, .. } => {
+                self.reviewed.unreviewed_count(review.id.number, paths)
+            }
+            _ => 0,
+        }
+    }
+
     /// The diff for the active review, if it is resident.
     fn diff(&self) -> Option<Entity<DiffView>> {
         self.residency.get(self.active_number()?).cloned()
@@ -168,6 +179,11 @@ impl Workspace {
             r.state = LoadState::Ready {
                 added: loaded.added,
                 removed: loaded.removed,
+                paths: loaded
+                    .files
+                    .iter()
+                    .map(|f| f.display_path().to_string())
+                    .collect(),
             };
         }
         let theme = self.theme.clone();
@@ -292,10 +308,11 @@ impl Render for Workspace {
         let mut rail = Vec::with_capacity(self.reviews.len());
         for ix in 0..self.reviews.len() {
             let selected = self.active == Some(ix);
+            let unreviewed = self.unreviewed_count(&self.reviews[ix]);
             rail.push(
                 div()
                     .id(("review", ix))
-                    .child(rail_row(&self.reviews[ix], selected, &theme))
+                    .child(rail_row(&self.reviews[ix], selected, unreviewed, &theme))
                     .on_click(cx.listener(move |this, _, _, cx| this.select(ix, cx))),
             );
         }
