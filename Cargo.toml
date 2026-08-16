@@ -16,6 +16,7 @@ diffident-model = { path = "crates/model" }
 diffident-ui = { path = "crates/ui" }
 diffident-diff = { path = "crates/diff" }
 diffident-forge = { path = "crates/forge" }
+diffident-session = { path = "crates/session" }
 diffident-highlight = { path = "crates/highlight" }
 
 # default-features off: we do not want syntect's own theme/syntax dump loading,
