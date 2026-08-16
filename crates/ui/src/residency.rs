@@ -6,6 +6,8 @@
 //! diff you are about to drop. Keeping them in one type means the whole
 //! multi-review policy is testable without opening a window.
 
+use std::collections::HashMap;
+
 /// The resident set for one window: bounded, most-recently-used last.
 pub struct Residency<T> {
     /// Most-recently-used last. A `Vec` rather than an LRU crate or a
@@ -14,6 +16,10 @@ pub struct Residency<T> {
     resident: Vec<(u32, T)>,
     /// Keys with a fetch in flight.
     pending: Vec<u32>,
+    /// Last cursor row per key, kept after the diff itself is evicted — one
+    /// integer per review is free, and it means returning to a review whose
+    /// diff was dropped still lands where the reviewer left off.
+    cursors: HashMap<u32, usize>,
     cap: usize,
 }
 
@@ -22,6 +28,7 @@ impl<T> Residency<T> {
         Self {
             resident: Vec::new(),
             pending: Vec::new(),
+            cursors: HashMap::new(),
             cap,
         }
     }
@@ -80,6 +87,23 @@ impl<T> Residency<T> {
     /// Clear the in-flight mark for a fetch that failed, so a retry is possible.
     pub fn abandon_fetch(&mut self, key: u32) {
         self.pending.retain(|k| *k != key);
+    }
+
+    pub fn remember_cursor(&mut self, key: u32, row: usize) {
+        self.cursors.insert(key, row);
+    }
+
+    /// Where to put the cursor when `key` is opened, given how many rows the
+    /// diff has *now*.
+    ///
+    /// Clamped, because the diff can be shorter than when the cursor was
+    /// remembered — a force-push between visits is exactly the case that would
+    /// otherwise index past the end.
+    pub fn recall_cursor(&self, key: u32, row_count: usize) -> usize {
+        match self.cursors.get(&key) {
+            Some(&row) => row.min(row_count.saturating_sub(1)),
+            None => 0,
+        }
     }
 
     /// Resident keys, oldest first. For tests and diagnostics.
@@ -148,6 +172,37 @@ mod tests {
         assert!(!r.begin_fetch(7), "now resident, so still no fetch");
     }
 
+    #[test]
+    fn an_unseen_review_opens_at_the_top() {
+        assert_eq!(residency().recall_cursor(7, 100), 0);
+    }
+
+    #[test]
+    fn a_remembered_cursor_survives_eviction_of_its_diff() {
+        let mut r = residency();
+        r.admit(1, 'a');
+        r.remember_cursor(1, 42);
+        for (n, c) in [(2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')] {
+            r.admit(n, c);
+        }
+        assert_eq!(r.get(1), None, "the diff itself is gone");
+        assert_eq!(r.recall_cursor(1, 100), 42, "but the position is not");
+    }
+
+    #[test]
+    fn a_remembered_cursor_is_clamped_to_a_diff_that_shrank() {
+        // The author force-pushed a smaller diff between visits.
+        let mut r = residency();
+        r.remember_cursor(1, 900);
+        assert_eq!(r.recall_cursor(1, 10), 9);
+    }
+
+    #[test]
+    fn a_remembered_cursor_on_an_empty_diff_is_zero_not_a_panic() {
+        let mut r = residency();
+        r.remember_cursor(1, 900);
+        assert_eq!(r.recall_cursor(1, 0), 0);
+    }
     #[test]
     fn a_failed_fetch_can_be_retried() {
         let mut r = residency();

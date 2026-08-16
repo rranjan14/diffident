@@ -98,8 +98,14 @@ impl Workspace {
         let Some(review) = self.reviews.get_mut(ix) else {
             return;
         };
-        self.active = Some(ix);
         let number = review.id.number;
+        // Remember where the outgoing review was, before it stops being active.
+        // Survives eviction of its diff, so returning later still lands there.
+        if let (Some(outgoing), Some(view)) = (self.active_number(), self.diff()) {
+            let row = view.read(cx).cursor;
+            self.residency.remember_cursor(outgoing, row);
+        }
+        self.active = Some(ix);
         let repo = self.repo.clone();
 
         // Already resident: promote to most-recently-used and skip the fetch
@@ -160,8 +166,11 @@ impl Workspace {
             };
         }
         let theme = self.theme.clone();
+        let row = self.residency.recall_cursor(number, loaded.rows.len());
         let view = cx.new(|_| {
-            DiffView::new(loaded.files, loaded.rows, loaded.highlights, theme)
+            let mut v = DiffView::new(loaded.files, loaded.rows, loaded.highlights, theme);
+            v.scroll_to(row);
+            v
         });
         self.residency.admit(number, view);
     }
