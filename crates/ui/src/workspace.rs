@@ -4,7 +4,7 @@
 //! window, rather than one OS window per PR.
 
 use crate::diff_view::DiffView;
-use crate::file_list::{file_entries, status_glyph};
+use crate::file_list::{file_entries, reviewed_marker, status_glyph};
 use crate::loader::{LoadedReview, list_reviews, load_review};
 use crate::navigate::*;
 use crate::rail::rail_row;
@@ -12,6 +12,7 @@ use crate::residency::Residency;
 use crate::theme::Theme;
 use diffident_forge::{Repo, gh::Gh, github::GitHub};
 use diffident_model::{LoadState, Review};
+use diffident_model::reviewed::Reviewed;
 use gpui::{
     Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString,
     Window, div, prelude::*, px,
@@ -32,6 +33,9 @@ pub struct Workspace {
     /// window holding N reviews (§1). Bounded because a large diff is tens of
     /// MB (§10).
     residency: Residency<Entity<DiffView>>,
+    /// Which files the reviewer has marked read, per PR. Outlives the diffs in
+    /// `residency` on purpose — evicting a diff must not forget your progress.
+    reviewed: Reviewed,
     theme: Theme,
     focus: FocusHandle,
     error: Option<String>,
@@ -44,6 +48,7 @@ impl Workspace {
             reviews: Vec::new(),
             active: None,
             residency: Residency::new(RESIDENT),
+            reviewed: Reviewed::new(),
             theme: Theme::dark(),
             focus: cx.focus_handle(),
             error: None,
@@ -197,6 +202,28 @@ impl Workspace {
         });
     }
 
+    /// `r`: flip the read mark on the file the cursor is in.
+    ///
+    /// A `Spacer` row belongs to no file, so the key does nothing there rather
+    /// than guessing at a neighbour.
+    fn toggle_reviewed(&mut self, cx: &mut Context<Self>) {
+        let (Some(number), Some(diff)) = (self.active_number(), self.diff()) else {
+            return;
+        };
+        let path = {
+            let view = diff.read(cx);
+            view.rows()
+                .get(view.cursor)
+                .and_then(|row| row.file_ix())
+                .and_then(|ix| view.files().get(ix))
+                .map(|f| f.display_path().to_string())
+        };
+        if let Some(path) = path {
+            self.reviewed.toggle(number, &path);
+            cx.notify();
+        }
+    }
+
     /// `ctrl-d` / `ctrl-u`. The distance depends on the laid-out viewport, so it
     /// is read from the view rather than passed in.
     fn half_page(&mut self, down: bool, cx: &mut Context<Self>) {
@@ -283,6 +310,9 @@ impl Render for Workspace {
                 file_entries(view.files(), view.rows())
             };
             for entry in entries {
+                let is_read = self
+                    .active_number()
+                    .is_some_and(|n| self.reviewed.is_reviewed(n, &entry.path));
                 let (row_ix, diff) = (entry.row_ix, diff.clone());
                 file_rows.push(
                     div()
@@ -296,7 +326,12 @@ impl Render for Workspace {
                         .rounded_md()
                         .hover(|this| this.bg(theme.row_hover))
                         .child(div().text_color(theme.text_muted).child(SharedString::from(
-                            format!("{} {}", status_glyph(&entry.status), entry.path),
+                            format!(
+                                "{} {} {}",
+                                reviewed_marker(is_read),
+                                status_glyph(&entry.status),
+                                entry.path
+                            ),
                         )))
                         .child(
                             div()
@@ -340,6 +375,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &Bottom, _, cx| {
                 this.move_cursor(|rows, _| rows.len().saturating_sub(1), cx)
             }))
+            .on_action(cx.listener(|this, _: &ToggleReviewed, _, cx| this.toggle_reviewed(cx)))
             .on_action(cx.listener(|this, _: &HalfPageDown, _, cx| this.half_page(true, cx)))
             .on_action(cx.listener(|this, _: &HalfPageUp, _, cx| this.half_page(false, cx)))
             .on_action(cx.listener(|this, _: &NextReview, _, cx| this.step_review(1, cx)))

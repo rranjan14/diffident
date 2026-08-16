@@ -122,3 +122,20 @@ pub enum Row {
     /// Blank separator. Carries no data so the UI can style it freely.
     Spacer,
 }
+
+impl Row {
+    /// Which file this row belongs to, if any.
+    ///
+    /// `Spacer` is the only row with no file — it sits *between* two of them.
+    /// Callers use this to map a cursor position back to a path, which is how
+    /// "mark this file reviewed" knows which file is meant.
+    pub fn file_ix(&self) -> Option<usize> {
+        match *self {
+            Row::FileHeader { file_ix }
+            | Row::HunkHeader { file_ix, .. }
+            | Row::Line { file_ix, .. }
+            | Row::Expander { file_ix, .. } => Some(file_ix),
+            Row::Spacer => None,
+        }
+    }
+}

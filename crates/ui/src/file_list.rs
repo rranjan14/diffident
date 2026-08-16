@@ -58,6 +58,13 @@ pub fn status_glyph(status: &FileStatus) -> &'static str {
         FileStatus::Copied { .. } => "C",
     }
 }
+/// The marker shown before a filename in the panel.
+///
+/// A check for read, a space for unread — same width either way, so the
+/// filenames stay aligned in a column rather than jittering as you mark them.
+pub fn reviewed_marker(reviewed: bool) -> &'static str {
+    if reviewed { "✓" } else { " " }
+}
 
 #[cfg(test)]
 mod tests {
@@ -65,6 +72,15 @@ mod tests {
     use diffident_diff::{parser::parse, rows::build_rows};
 
     const TWO_FILES: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n@@ -50,1 +50,2 @@\n k\n+add\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1,1 +1,1 @@\n z\n";
+
+    #[test]
+    fn the_reviewed_marker_is_the_same_width_either_way() {
+        // The filename column must not jitter as files are marked read.
+        assert_eq!(
+            reviewed_marker(true).chars().count(),
+            reviewed_marker(false).chars().count()
+        );
+    }
 
     #[test]
     fn file_entries_count_added_and_removed_lines_per_file() {
