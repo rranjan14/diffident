@@ -213,3 +213,49 @@ mod tests {
         assert!(build_rows(&[]).is_empty());
     }
 }
+
+#[cfg(test)]
+mod content_hash_tests {
+    use crate::parser::parse;
+
+    const BASE: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n";
+
+    #[test]
+    fn the_same_file_hashes_the_same_way_twice() {
+        assert_eq!(parse(BASE)[0].content_hash(), parse(BASE)[0].content_hash());
+    }
+
+    #[test]
+    fn changing_a_line_changes_the_hash() {
+        let edited = BASE.replace("+new", "+newer");
+        assert_ne!(parse(BASE)[0].content_hash(), parse(&edited)[0].content_hash());
+    }
+
+    #[test]
+    fn changing_only_the_line_numbers_does_not_change_the_hash() {
+        // A change earlier in the file shifts this hunk's numbering without
+        // touching its content. The reviewer's mark should survive that.
+        let moved = BASE.replace("@@ -1,2 +1,2 @@", "@@ -40,2 +40,2 @@");
+        assert_eq!(parse(BASE)[0].content_hash(), parse(&moved)[0].content_hash());
+    }
+
+    #[test]
+    fn adding_a_line_changes_the_hash() {
+        let grown = format!("{BASE}+extra\n");
+        assert_ne!(parse(BASE)[0].content_hash(), parse(&grown)[0].content_hash());
+    }
+
+    #[test]
+    fn two_different_files_hash_differently() {
+        let other = BASE.replace("a.rs", "b.rs");
+        assert_ne!(parse(BASE)[0].content_hash(), parse(&other)[0].content_hash());
+    }
+
+    #[test]
+    fn a_removed_line_and_an_added_line_with_the_same_text_differ() {
+        // Only the kind differs; the hash must still separate them.
+        let removed = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,0 @@\n-same\n";
+        let added = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,0 +1,1 @@\n+same\n";
+        assert_ne!(parse(removed)[0].content_hash(), parse(added)[0].content_hash());
+    }
+}

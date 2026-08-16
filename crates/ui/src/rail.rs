@@ -100,7 +100,7 @@ mod tests {
             LoadState::Ready {
                 added: 12,
                 removed: 3,
-                paths: Vec::new(),
+                files: Vec::new(),
             },
         );
         assert_eq!(rail_label(&r, 0), "#1  +12 -3  done");
@@ -131,7 +131,7 @@ mod tests {
             LoadState::Ready {
                 added: 12,
                 removed: 3,
-                paths: vec!["a.rs".into(), "b.rs".into(), "c.rs".into()],
+                files: vec![("a.rs".into(), 1), ("b.rs".into(), 1), ("c.rs".into(), 1)],
             },
         );
         assert_eq!(rail_label(&r, 2), "#1  +12 -3  2 left");
@@ -145,7 +145,7 @@ mod tests {
             LoadState::Ready {
                 added: 12,
                 removed: 3,
-                paths: vec!["a.rs".into()],
+                files: vec![("a.rs".into(), 1)],
             },
         );
         assert_eq!(rail_label(&r, 0), "#1  +12 -3  done");
@@ -166,7 +166,7 @@ mod tests {
             LoadState::Ready {
                 added: 12,
                 removed: 3,
-                paths: vec!["a.rs".into()],
+                files: vec![("a.rs".into(), 1)],
             },
         );
         r.rebased = true;
@@ -181,7 +181,7 @@ mod tests {
             LoadState::Ready {
                 added: 12,
                 removed: 3,
-                paths: vec!["a.rs".into()],
+                files: vec![("a.rs".into(), 1)],
             },
         );
         assert!(!rail_label(&r, 1).contains("rebased"));
