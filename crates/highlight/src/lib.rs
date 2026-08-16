@@ -4,6 +4,7 @@
 //! them to `HighlightStyle` at the view boundary. That keeps `syntect` — which
 //! loads a multi-megabyte syntax dump — out of the UI crate's test build.
 
+pub mod rows;
 pub mod syntax;
 
 use std::ops::Range;

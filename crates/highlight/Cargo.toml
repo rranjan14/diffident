@@ -4,5 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+diffident-diff.workspace = true
 syntect.workspace = true
 two-face.workspace = true

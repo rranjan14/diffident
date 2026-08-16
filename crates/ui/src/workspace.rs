@@ -9,7 +9,7 @@ use crate::loader::{LoadedReview, list_reviews, load_review};
 use crate::navigate::*;
 use crate::rail::rail_row;
 use crate::theme::Theme;
-use diffident_forge::{PrFilter, Repo, gh::Gh, github::GitHub};
+use diffident_forge::{Repo, gh::Gh, github::GitHub};
 use diffident_model::{LoadState, Review};
 use gpui::{
     Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString,
@@ -20,7 +20,13 @@ pub struct Workspace {
     repo: Repo,
     reviews: Vec<Review>,
     active: Option<usize>,
-    diff: Option<Entity<DiffView>>,
+    /// Resident diffs, keyed by PR number, most-recently-used last.
+    ///
+    /// Re-opening a review costs ~2s of `gh` plus ~530ms of highlighting, so
+    /// keeping a few alive makes switching instant — that is the whole point of
+    /// one window holding N reviews (§1). Bounded because a large diff is tens
+    /// of MB (§10).
+    diffs: Vec<(u32, Entity<DiffView>)>,
     theme: Theme,
     focus: FocusHandle,
     error: Option<String>,
@@ -32,7 +38,7 @@ impl Workspace {
             repo: repo.clone(),
             reviews: Vec::new(),
             active: None,
-            diff: None,
+            diffs: Vec::new(),
             theme: Theme::dark(),
             focus: cx.focus_handle(),
             error: None,
@@ -50,7 +56,7 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let listed = cx
                 .background_executor()
-                .spawn(async move { list_reviews(&GitHub::new(Gh), &repo, PrFilter::AllOpen) })
+                .spawn(async move { list_reviews(&GitHub::new(Gh), &repo) })
                 .await;
             this.update(cx, |this, cx| {
                 match listed {
@@ -72,14 +78,35 @@ impl Workspace {
         .detach();
     }
 
-    /// Open a review, fetching its diff if it is not already resident.
+    /// How many diffs stay resident. Four covers a typical stack (§6) without
+    /// holding an unbounded amount of parsed diff in memory.
+    const RESIDENT: usize = 4;
+
+    /// The diff for the active review, if it is resident.
+    fn diff(&self) -> Option<Entity<DiffView>> {
+        let number = self.active.and_then(|ix| self.reviews.get(ix))?.id.number;
+        self.diffs
+            .iter()
+            .find(|(n, _)| *n == number)
+            .map(|(_, d)| d.clone())
+    }
+
+    /// Open a review, fetching its diff only if it is not already resident.
     fn select(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(review) = self.reviews.get_mut(ix) else {
             return;
         };
         self.active = Some(ix);
-        review.state = LoadState::Loading;
         let (repo, number) = (self.repo.clone(), review.id.number);
+
+        // Already resident: promote to most-recently-used and skip the fetch
+        // entirely. This is what makes switching between stacked PRs instant.
+        if touch(&mut self.diffs, number) {
+            cx.notify();
+            return;
+        }
+
+        review.state = LoadState::Loading;
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -113,17 +140,19 @@ impl Workspace {
         }
         if let Some(r) = self.reviews.iter_mut().find(|r| r.id.number == number) {
             r.state = LoadState::Ready {
-                head_sha: loaded.request.head_sha.clone(),
                 added: loaded.added,
                 removed: loaded.removed,
             };
         }
         let theme = self.theme.clone();
-        self.diff = Some(cx.new(|_| DiffView::new(loaded.files, loaded.rows, theme)));
+        let view = cx.new(|_| {
+            DiffView::new(loaded.files, loaded.rows, loaded.highlights, theme)
+        });
+        admit(&mut self.diffs, number, view, Self::RESIDENT);
     }
 
     fn move_cursor(&mut self, f: impl Fn(&[diffident_diff::Row], usize) -> usize, cx: &mut Context<Self>) {
-        let Some(diff) = self.diff.clone() else {
+        let Some(diff) = self.diff() else {
             return;
         };
         diff.update(cx, |view, cx| {
@@ -136,7 +165,7 @@ impl Workspace {
     /// `ctrl-d` / `ctrl-u`. The distance depends on the laid-out viewport, so it
     /// is read from the view rather than passed in.
     fn half_page(&mut self, down: bool, cx: &mut Context<Self>) {
-        let Some(diff) = self.diff.clone() else {
+        let Some(diff) = self.diff() else {
             return;
         };
         let distance = diff.read(cx).rows_per_half_page();
@@ -155,6 +184,32 @@ impl Workspace {
         let from = self.active.unwrap_or(0) as isize;
         let next = (from + delta).rem_euclid(len) as usize;
         self.select(next, cx);
+    }
+}
+
+
+/// Move `key`'s entry to the most-recently-used end. Returns whether it was there.
+///
+/// A `Vec` rather than an LRU crate or a HashMap+order pair: the cache holds
+/// four things, so a linear scan is faster than hashing and the whole policy
+/// stays two functions you can read at once.
+fn touch<T>(cache: &mut Vec<(u32, T)>, key: u32) -> bool {
+    match cache.iter().position(|(k, _)| *k == key) {
+        Some(pos) => {
+            let entry = cache.remove(pos);
+            cache.push(entry);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Insert as most-recently-used, evicting from the front until within `cap`.
+fn admit<T>(cache: &mut Vec<(u32, T)>, key: u32, value: T, cap: usize) {
+    cache.retain(|(k, _)| *k != key);
+    cache.push((key, value));
+    while cache.len() > cap {
+        cache.remove(0);
     }
 }
 
@@ -183,7 +238,7 @@ impl Render for Workspace {
         // clicking an entry scrolls that view — the parent owns the wiring
         // between the two panes.
         let mut file_rows = Vec::new();
-        if let Some(diff) = self.diff.clone() {
+        if let Some(diff) = self.diff() {
             let entries = {
                 let view = diff.read(cx);
                 file_entries(view.files(), view.rows())
@@ -298,7 +353,7 @@ impl Render for Workspace {
                     .border_color(theme.border)
                     .children(file_rows)
             }))
-            .child(match self.diff.clone() {
+            .child(match self.diff() {
                 Some(diff) => div().flex_1().h_full().child(diff).into_any_element(),
                 None => div()
                     .flex_1()
@@ -313,6 +368,45 @@ impl Render for Workspace {
 
 #[cfg(test)]
 mod tests {
+    use super::{admit, touch};
+
+    fn keys<T>(cache: &[(u32, T)]) -> Vec<u32> {
+        cache.iter().map(|(k, _)| *k).collect()
+    }
+
+    #[test]
+    fn touching_a_resident_review_promotes_it_and_reports_a_hit() {
+        let mut c = vec![(1, ()), (2, ()), (3, ())];
+        assert!(touch(&mut c, 1));
+        assert_eq!(keys(&c), vec![2, 3, 1], "hit must become most-recent");
+    }
+
+    #[test]
+    fn touching_an_absent_review_reports_a_miss_and_changes_nothing() {
+        let mut c = vec![(1, ()), (2, ())];
+        assert!(!touch(&mut c, 9));
+        assert_eq!(keys(&c), vec![1, 2]);
+    }
+
+    #[test]
+    fn admitting_beyond_the_cap_evicts_the_least_recently_used() {
+        let mut c = Vec::new();
+        for n in 1..=6 {
+            admit(&mut c, n, (), 4);
+        }
+        assert_eq!(keys(&c), vec![3, 4, 5, 6], "1 and 2 are the oldest");
+    }
+
+    #[test]
+    fn re_admitting_a_review_replaces_it_rather_than_duplicating() {
+        // A refetch of an already-resident PR must not leave two entries, or
+        // the stale one can be served after the fresh one is evicted.
+        let mut c = vec![(1, 'a'), (2, 'b')];
+        admit(&mut c, 1, 'z', 4);
+        assert_eq!(keys(&c), vec![2, 1]);
+        assert_eq!(c.last().unwrap().1, 'z');
+    }
+
     /// Every action declared in `navigate.rs` must have an `on_action` handler
     /// here.
     ///

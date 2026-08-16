@@ -59,6 +59,7 @@ pub fn highlight_run(path: &str, lines: &[&str]) -> Vec<Highlights> {
         .collect()
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
