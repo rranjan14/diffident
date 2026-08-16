@@ -13,6 +13,7 @@ use crate::theme::Theme;
 use diffident_forge::{Repo, gh::Gh, github::GitHub};
 use diffident_model::{LoadState, Review};
 use diffident_model::reviewed::Reviewed;
+use diffident_session::store::{Session, SessionKey, Store, default_root};
 use diffident_forge::stack::next_in_stack;
 use gpui::{
     Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString,
@@ -37,6 +38,8 @@ pub struct Workspace {
     /// Which files the reviewer has marked read, per PR. Outlives the diffs in
     /// `residency` on purpose — evicting a diff must not forget your progress.
     reviewed: Reviewed,
+    /// Where review progress is persisted. One file per PR (§7).
+    store: Store,
     theme: Theme,
     focus: FocusHandle,
     error: Option<String>,
@@ -50,6 +53,7 @@ impl Workspace {
             active: None,
             residency: Residency::new(RESIDENT),
             reviewed: Reviewed::new(),
+            store: Store::new(default_root()),
             theme: Theme::dark(),
             focus: cx.focus_handle(),
             error: None,
@@ -221,6 +225,11 @@ impl Workspace {
                     .collect(),
             };
         }
+        // Reattach saved progress. Marks whose hash no longer matches simply
+        // read as unread, so nothing needs filtering here (§7).
+        let saved = self.store.load(&self.session_key(number));
+        self.reviewed.restore(number, saved.reviewed);
+
         let theme = self.theme.clone();
         let row = self.residency.recall_cursor(number, loaded.rows.len());
         let view = cx.new(|_| {
@@ -271,7 +280,42 @@ impl Workspace {
         };
         if let Some((path, hash)) = mark {
             self.reviewed.toggle(number, &path, hash);
+            self.persist(number);
             cx.notify();
+        }
+    }
+
+    /// The storage key for one review.
+    fn session_key(&self, number: u32) -> SessionKey {
+        SessionKey {
+            repo: self.repo.slug(),
+            pr: number,
+        }
+    }
+
+    /// Write this review's progress to disk.
+    ///
+    /// Called on every toggle rather than on quit: a review app that loses an
+    /// hour of marks because it was force-quit is worse than one that writes a
+    /// few KB more often, and the write is atomic so a crash mid-save cannot
+    /// corrupt what was already there.
+    ///
+    /// A failed write is surfaced but not fatal — the marks are still correct
+    /// in memory, and refusing to continue the review over a disk error would
+    /// be the larger harm.
+    fn persist(&mut self, number: u32) {
+        let session = Session {
+            head_sha: self
+                .reviews
+                .iter()
+                .find(|r| r.id.number == number)
+                .map(|r| r.head_sha.clone())
+                .unwrap_or_default(),
+            comments: Vec::new(),
+            reviewed: self.reviewed.marks(number),
+        };
+        if let Err(e) = self.store.save(&self.session_key(number), &session) {
+            self.error = Some(format!("could not save review progress: {e}"));
         }
     }
 

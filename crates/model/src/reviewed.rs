@@ -1,8 +1,9 @@
 //! Which files the reviewer has already read.
 //!
-//! In-memory only. Persistence and the `content_hash` invalidation that
-//! survives a force-push are Phase 5 (§7) — this is the smaller thing Phase 4
-//! needs to answer "what is left to review, across the whole stack" (§6).
+//! Marks record the content hash they were read at (§7), so a file that
+//! changed under them reads as unread again, and `marks`/`restore` carry the
+//! set across a restart. This is also what answers "what is left to review,
+//! across the whole stack" (§6).
 
 use std::collections::HashMap;
 

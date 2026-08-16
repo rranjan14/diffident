@@ -8,4 +8,5 @@ diffident-model.workspace = true
 diffident-diff.workspace = true
 diffident-forge.workspace = true
 diffident-highlight.workspace = true
+diffident-session.workspace = true
 gpui.workspace = true

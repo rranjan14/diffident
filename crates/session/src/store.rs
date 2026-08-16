@@ -210,3 +210,62 @@ mod tests {
         assert_eq!(files.len(), 1, "one file per PR, not one per head");
     }
 }
+
+#[cfg(test)]
+mod round_trip_tests {
+    use super::*;
+    use diffident_model::reviewed::Reviewed;
+
+    /// Exactly what `Workspace` does: save marks, then restore them into a
+    /// fresh `Reviewed` and ask whether each file is still read.
+    fn save_then_reload(marks_at: u64, reload_at: u64) -> bool {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let key = SessionKey {
+            repo: "o/r".into(),
+            pr: 7,
+        };
+
+        let mut before = Reviewed::new();
+        before.toggle(7, "a.rs", marks_at);
+        store
+            .save(
+                &key,
+                &Session {
+                    head_sha: "abc".into(),
+                    comments: Vec::new(),
+                    reviewed: before.marks(7),
+                },
+            )
+            .unwrap();
+
+        let mut after = Reviewed::new();
+        after.restore(7, store.load(&key).reviewed);
+        after.is_reviewed(7, "a.rs", reload_at)
+    }
+
+    #[test]
+    fn a_mark_survives_a_restart_when_the_file_is_unchanged() {
+        assert!(save_then_reload(111, 111));
+    }
+
+    #[test]
+    fn a_mark_is_dropped_after_a_restart_when_the_file_changed() {
+        // §7's rule, end to end and on disk.
+        assert!(!save_then_reload(111, 222));
+    }
+
+    #[test]
+    fn an_unmarked_file_is_still_unmarked_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let key = SessionKey {
+            repo: "o/r".into(),
+            pr: 7,
+        };
+        store.save(&key, &Session::default()).unwrap();
+        let mut after = Reviewed::new();
+        after.restore(7, store.load(&key).reviewed);
+        assert!(!after.is_reviewed(7, "a.rs", 111));
+    }
+}
