@@ -20,7 +20,7 @@ impl<R: GhRunner> GitHub<R> {
 
 /// The `--json` field set for list queries. Kept as a constant so the tests
 /// and the call site cannot drift apart.
-const LIST_FIELDS: &str = "number,title,headRefName,baseRefName,isDraft,url,isCrossRepository";
+const LIST_FIELDS: &str = "number,title,headRefName,baseRefName,isDraft,url,isCrossRepository,headRefOid";
 const DETAIL_FIELDS: &str = "number,title,headRefName,baseRefName,headRefOid";
 
 fn decode<T: serde::de::DeserializeOwned>(raw: &str) -> Result<T, GhError> {
@@ -65,13 +65,13 @@ mod tests {
         }
     }
 
-    const LIST_ARGS: &str = "pr list --repo o/r --state open --limit 100 --json number,title,headRefName,baseRefName,isDraft,url,isCrossRepository";
+    const LIST_ARGS: &str = "pr list --repo o/r --state open --limit 100 --json number,title,headRefName,baseRefName,isDraft,url,isCrossRepository,headRefOid";
 
     #[test]
     fn list_prs_decodes_the_json_gh_returns() {
         let gh = FakeGh::new().with(
             LIST_ARGS,
-            r#"[{"number":7,"title":"t","headRefName":"h","baseRefName":"main","isDraft":false,"url":"u","isCrossRepository":false}]"#,
+            r#"[{"number":7,"title":"t","headRefName":"h","baseRefName":"main","isDraft":false,"url":"u","isCrossRepository":false,"headRefOid":"abc"}]"#,
         );
         let prs = GitHub::new(gh).list_prs(&repo()).unwrap();
         assert_eq!(prs.len(), 1);

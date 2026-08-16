@@ -52,6 +52,14 @@ pub struct Review {
     /// Rail indent from stack detection (§6). 0 for a root PR.
     pub depth: usize,
     pub is_draft: bool,
+    /// The commit this review was listed at.
+    pub head_sha: String,
+    /// The head moved since we loaded this review's diff (§6).
+    ///
+    /// A flag, not an action: the reviewed marks are deliberately left alone.
+    /// Phase 5's `content_hash` can tell which files genuinely changed; until
+    /// then, telling the reviewer beats silently discarding their progress.
+    pub rebased: bool,
     pub state: LoadState,
 }
 
@@ -77,6 +85,8 @@ mod tests {
             branch: "feat/add-search".into(),
             depth: 0,
             is_draft: false,
+            head_sha: String::new(),
+            rebased: false,
             state: LoadState::Idle,
         }
     }

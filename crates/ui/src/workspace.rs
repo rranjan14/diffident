@@ -71,11 +71,26 @@ impl Workspace {
                 .await;
             this.update(cx, |this, cx| {
                 match listed {
-                    Ok(reviews) => {
-                        this.reviews = reviews;
+                    Ok(listed) => {
                         this.error = None;
+                        this.reviews = listed
+                            .into_iter()
+                            .map(|mut fresh| {
+                                // Carry over what the listing does not know, and
+                                // flag a head that moved under a loaded review.
+                                if let Some(old) =
+                                    this.reviews.iter().find(|r| r.id == fresh.id)
+                                {
+                                    fresh.rebased =
+                                        old.rebased || old.head_sha != fresh.head_sha;
+                                    fresh.state = old.state.clone();
+                                }
+                                fresh
+                            })
+                            .collect();
                         if let Some(number) = open_pr
-                            && let Some(ix) = this.reviews.iter().position(|r| r.id.number == number)
+                            && let Some(ix) =
+                                this.reviews.iter().position(|r| r.id.number == number)
                         {
                             this.select(ix, cx);
                         }
@@ -445,6 +460,7 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &ToggleReviewed, _, cx| this.toggle_reviewed(cx)))
             .on_action(cx.listener(|this, _: &NextUnreviewed, _, cx| this.next_unreviewed(cx)))
+            .on_action(cx.listener(|this, _: &Refresh, _, cx| this.refresh(None, cx)))
             .on_action(cx.listener(|this, _: &HalfPageDown, _, cx| this.half_page(true, cx)))
             .on_action(cx.listener(|this, _: &HalfPageUp, _, cx| this.half_page(false, cx)))
             .on_action(cx.listener(|this, _: &NextReview, _, cx| this.step_review(1, cx)))
@@ -540,6 +556,8 @@ mod tests {
             branch: "b".into(),
             depth: 0,
             is_draft: false,
+            head_sha: String::new(),
+            rebased: false,
             state,
         }
     }

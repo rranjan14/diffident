@@ -18,6 +18,7 @@ actions!(
         NextUnreviewed,
         NextReview,
         PrevReview,
+        Refresh,
     ]
 );
 
@@ -50,6 +51,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("tab", NextUnreviewed, Some("Diff")),
         KeyBinding::new("ctrl-tab", NextReview, None),
         KeyBinding::new("ctrl-shift-tab", PrevReview, None),
+        KeyBinding::new("shift-r", Refresh, None),
     ]
 }
 
@@ -165,6 +167,6 @@ mod tests {
         let before = keys.len();
         keys.dedup();
         assert_eq!(before, keys.len(), "a key is bound twice");
-        assert_eq!(before, 14, "every action in the actions! set needs a binding");
+        assert_eq!(before, 15, "every action in the actions! set needs a binding");
     }
 }

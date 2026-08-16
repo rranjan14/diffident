@@ -128,6 +128,7 @@ mod tests {
             is_draft: false,
             url: String::new(),
             is_cross_repository: false,
+            head_ref_oid: String::new(),
         }
     }
 

@@ -28,7 +28,8 @@ pub fn rail_label(review: &Review, unreviewed: usize) -> String {
             } else {
                 format!("{unreviewed} left")
             };
-            format!("{}  +{added} -{removed}  {left}", review.subtitle())
+            let rebased = if review.rebased { "  rebased" } else { "" };
+            format!("{}  +{added} -{removed}  {left}{rebased}", review.subtitle())
         }
         LoadState::Failed { message } => format!("{}  failed: {message}", review.subtitle()),
     }
@@ -80,6 +81,8 @@ mod tests {
             branch: format!("branch-{number}"),
             depth,
             is_draft: false,
+            head_sha: String::new(),
+            rebased: false,
             state,
         }
     }
@@ -153,6 +156,35 @@ mod tests {
         // gh's list API caps file lists at 100 per PR, so a pre-fetched count
         // would silently undercount. No badge beats a wrong badge.
         assert_eq!(rail_label(&review(1, 0, LoadState::Idle), 0), "#1");
+    }
+
+    #[test]
+    fn a_rebased_review_is_flagged_in_the_rail() {
+        let mut r = review(
+            1,
+            0,
+            LoadState::Ready {
+                added: 12,
+                removed: 3,
+                paths: vec!["a.rs".into()],
+            },
+        );
+        r.rebased = true;
+        assert_eq!(rail_label(&r, 1), "#1  +12 -3  1 left  rebased");
+    }
+
+    #[test]
+    fn an_unrebased_review_says_nothing_extra() {
+        let r = review(
+            1,
+            0,
+            LoadState::Ready {
+                added: 12,
+                removed: 3,
+                paths: vec!["a.rs".into()],
+            },
+        );
+        assert!(!rail_label(&r, 1).contains("rebased"));
     }
 
     #[test]
