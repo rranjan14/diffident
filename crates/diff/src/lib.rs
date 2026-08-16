@@ -19,6 +19,28 @@ pub struct DiffFile {
 }
 
 impl DiffFile {
+    /// A fingerprint of this file's contribution to the diff (§7).
+    ///
+    /// Covers the path and every line's kind and text, so any edit to what the
+    /// reviewer actually saw changes it. Deliberately *excludes* line numbers:
+    /// a change earlier in the file shifts every later hunk's numbering without
+    /// altering a byte of this file's content, and dropping the reviewer's mark
+    /// for that would be noise.
+    ///
+    /// Not stable across releases — if the diff model changes shape, old hashes
+    /// stop matching and marks reset once. That is an acceptable trade for
+    /// having no versioning to maintain.
+    pub fn content_hash(&self) -> u64 {
+        let mut hash = fnv1a(self.display_path().as_bytes(), 0xcbf2_9ce4_8422_2325);
+        for hunk in &self.hunks {
+            for line in &hunk.lines {
+                hash = fnv1a(&[line.kind as u8], hash);
+                hash = fnv1a(line.text.as_bytes(), hash);
+            }
+        }
+        hash
+    }
+
     /// The path to show in UI and to send to GitHub as a comment anchor.
     /// GitHub anchors comments on the *new* path except for deletions.
     pub fn display_path(&self) -> &str {
@@ -78,6 +100,7 @@ pub struct DiffLine {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum LineKind {
     Context,
     Added,
@@ -121,6 +144,16 @@ pub enum Row {
     },
     /// Blank separator. Carries no data so the UI can style it freely.
     Spacer,
+}
+
+/// FNV-1a, 64-bit. Ten lines and no dependency; we need a stable fingerprint,
+/// not a cryptographic one.
+fn fnv1a(bytes: &[u8], mut hash: u64) -> u64 {
+    for byte in bytes {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100_0000_01b3);
+    }
+    hash
 }
 
 impl Row {
