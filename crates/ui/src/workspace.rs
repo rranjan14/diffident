@@ -173,6 +173,17 @@ impl Workspace {
             v
         });
         self.residency.admit(number, view, &loaded.head_sha);
+
+        // Keep whatever the reviewer is actually looking at at the
+        // most-recently-used end. Open four reviews, click back to the first,
+        // and then let all four fetches land: without this, those four
+        // admissions evict the first out from under them and the diff pane goes
+        // blank until they click the rail again. Fetches land on their own
+        // schedule, so "most recently admitted" is not "most recently looked
+        // at" — only this makes them agree.
+        if let Some(active) = self.active_number() {
+            self.residency.activate(active);
+        }
     }
 
     fn move_cursor(&mut self, f: impl Fn(&[diffident_diff::Row], usize) -> usize, cx: &mut Context<Self>) {
@@ -211,6 +222,35 @@ impl Workspace {
     }
 }
 
+
+/// What the diff pane shows when no diff is resident for the active review.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Placeholder {
+    NothingSelected,
+    Loading,
+    Failed(String),
+}
+
+/// Decide what the diff pane says when it has no diff to draw.
+///
+/// Split out of `render` so all three cases are testable without a window. The
+/// pane used to say "select a review" in every one of them, which was a plain
+/// lie the moment you clicked something: the rail said "loading…" while the
+/// pane said you had selected nothing.
+///
+/// An active review with no resident diff has either failed or has a fetch
+/// running or about to run — `select` never leaves a review active without one
+/// of those being true, and `apply` re-activates the on-screen review so it
+/// cannot be evicted while you are looking at it.
+fn placeholder(active: Option<&Review>) -> Placeholder {
+    let Some(review) = active else {
+        return Placeholder::NothingSelected;
+    };
+    match &review.state {
+        LoadState::Failed { message } => Placeholder::Failed(message.clone()),
+        _ => Placeholder::Loading,
+    }
+}
 
 impl Focusable for Workspace {
     fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
@@ -354,19 +394,84 @@ impl Render for Workspace {
             }))
             .child(match self.diff() {
                 Some(diff) => div().flex_1().h_full().child(diff).into_any_element(),
-                None => div()
-                    .flex_1()
-                    .items_center()
-                    .justify_center()
-                    .text_color(theme.text_muted)
-                    .child("select a review")
-                    .into_any_element(),
+                None => {
+                    let active = self.active.and_then(|ix| self.reviews.get(ix));
+                    let (text, colour) = match placeholder(active) {
+                        Placeholder::NothingSelected => {
+                            (SharedString::from("select a review"), theme.text_muted)
+                        }
+                        Placeholder::Loading => {
+                            (SharedString::from("loading…"), theme.text_muted)
+                        }
+                        Placeholder::Failed(message) => (
+                            SharedString::from(format!("failed: {message}")),
+                            theme.removed,
+                        ),
+                    };
+                    div()
+                        .flex_1()
+                        .items_center()
+                        .justify_center()
+                        .text_color(colour)
+                        .child(text)
+                        .into_any_element()
+                }
             })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{Placeholder, placeholder};
+    use diffident_model::{LoadState, Review, ReviewId};
+
+    fn review(state: LoadState) -> Review {
+        Review {
+            id: ReviewId {
+                repo: "o/r".into(),
+                number: 7,
+            },
+            title: "t".into(),
+            branch: "b".into(),
+            depth: 0,
+            is_draft: false,
+            state,
+        }
+    }
+
+    #[test]
+    fn with_nothing_selected_the_pane_says_so() {
+        assert_eq!(placeholder(None), Placeholder::NothingSelected);
+    }
+
+    #[test]
+    fn a_selected_review_that_is_still_fetching_says_loading_not_select_a_review() {
+        // The rail said "loading…" while the pane said you had selected
+        // nothing. Both describe the same review; they must agree.
+        assert_eq!(
+            placeholder(Some(&review(LoadState::Loading))),
+            Placeholder::Loading
+        );
+    }
+
+    #[test]
+    fn a_failed_review_shows_its_error_in_the_pane_too() {
+        assert_eq!(
+            placeholder(Some(&review(LoadState::Failed {
+                message: "gh auth login".into()
+            }))),
+            Placeholder::Failed("gh auth login".into())
+        );
+    }
+
+    #[test]
+    fn a_selected_review_awaiting_its_first_fetch_says_loading() {
+        assert_eq!(
+            placeholder(Some(&review(LoadState::Idle))),
+            Placeholder::Loading
+        );
+    }
+
     /// Every action declared in `navigate.rs` must have an `on_action` handler
     /// here.
     ///

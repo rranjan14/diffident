@@ -95,10 +95,6 @@ impl<T> Residency<T> {
         true
     }
 
-    /// Whether a fetch for `key` is running.
-    pub fn is_fetching(&self, key: u32) -> bool {
-        self.pending.contains(&key)
-    }
 
     /// Clear the in-flight mark for a fetch that failed, so a retry is possible.
     pub fn abandon_fetch(&mut self, key: u32) {
@@ -171,7 +167,6 @@ mod tests {
         let mut r = residency();
         assert!(r.begin_fetch(7), "first click starts the fetch");
         assert!(!r.begin_fetch(7), "second click must not");
-        assert!(r.is_fetching(7));
     }
 
     #[test]
@@ -186,7 +181,6 @@ mod tests {
         let mut r = residency();
         r.begin_fetch(7);
         r.admit(7, 'a', HEAD);
-        assert!(!r.is_fetching(7));
         assert!(!r.begin_fetch(7), "now resident, so still no fetch");
     }
 
@@ -208,6 +202,34 @@ mod tests {
         r.remember_cursor(1, 42);
         r.admit(1, 'b', HEAD);
         assert_eq!(r.recall_cursor(1, 100), 42);
+    }
+
+    #[test]
+    fn re_activating_after_each_admit_keeps_the_on_screen_review_resident() {
+        // Open one review, then let four other fetches land at once. Without
+        // re-activating the one being looked at, those four admissions evict it
+        // and the diff pane goes blank. `Workspace::apply` re-activates the
+        // active review after every admit for exactly this reason.
+        let mut r = residency();
+        r.admit(1, 'a', HEAD);
+        for (n, c) in [(2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')] {
+            r.admit(n, c, HEAD);
+            r.activate(1);
+        }
+        assert!(r.get(1).is_some(), "the on-screen review must survive");
+        assert_eq!(*r.keys().last().unwrap(), 1, "and stay most-recently-used");
+    }
+
+    #[test]
+    fn without_re_activating_the_on_screen_review_is_evicted() {
+        // The bug this guards against, stated as a fact about the cache: four
+        // admissions past the cap will drop whatever was there first.
+        let mut r = residency();
+        r.admit(1, 'a', HEAD);
+        for (n, c) in [(2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')] {
+            r.admit(n, c, HEAD);
+        }
+        assert!(r.get(1).is_none());
     }
 
     #[test]
@@ -246,7 +268,6 @@ mod tests {
         let mut r = residency();
         r.begin_fetch(7);
         r.abandon_fetch(7);
-        assert!(!r.is_fetching(7));
         assert!(r.begin_fetch(7), "a failure must not block retrying forever");
     }
     #[test]
