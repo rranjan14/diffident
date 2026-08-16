@@ -96,6 +96,16 @@ impl<T> Residency<T> {
     }
 
 
+    /// Drop `key`'s cached value so the next request refetches it.
+    ///
+    /// For a diff that is known to be out of date — the PR was force-pushed —
+    /// where keeping it would mean showing stale code with no way to reload.
+    /// The remembered cursor is left alone: `admit` decides whether it survives,
+    /// by comparing the new head against the old one.
+    pub fn forget(&mut self, key: u32) {
+        self.resident.retain(|(k, _)| *k != key);
+    }
+
     /// Clear the in-flight mark for a fetch that failed, so a retry is possible.
     pub fn abandon_fetch(&mut self, key: u32) {
         self.pending.retain(|k| *k != key);
@@ -230,6 +240,31 @@ mod tests {
             r.admit(n, c, HEAD);
         }
         assert!(r.get(1).is_none());
+    }
+
+    #[test]
+    fn forgetting_drops_the_cached_value_so_the_next_open_refetches() {
+        let mut r = residency();
+        r.admit(1, 'a', HEAD);
+        r.forget(1);
+        assert_eq!(r.get(1), None);
+        assert!(r.begin_fetch(1), "no longer resident, so a fetch may start");
+    }
+
+    #[test]
+    fn forgetting_leaves_other_reviews_alone() {
+        let mut r = residency();
+        r.admit(1, 'a', HEAD);
+        r.admit(2, 'b', HEAD);
+        r.forget(1);
+        assert_eq!(r.get(2), Some(&'b'));
+    }
+
+    #[test]
+    fn forgetting_an_absent_review_is_harmless() {
+        let mut r = residency();
+        r.forget(99);
+        assert!(r.keys().is_empty());
     }
 
     #[test]
