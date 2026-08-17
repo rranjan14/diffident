@@ -409,4 +409,26 @@ mod tests {
         );
     }
 
+    /// The first test in this crate to run inside a real gpui app.
+    ///
+    /// Everything above is a pure function; this proves the harness itself —
+    /// that `TestAppContext` builds an app with no window server and no fonts,
+    /// and that our own view types survive being created as entities inside
+    /// it. Until now nothing in `crates/ui` could construct an entity in a
+    /// test, which is why two guard tests elsewhere resort to reading their
+    /// own source file. `Workspace` follows once it has somewhere to inject a
+    /// forge — until then it would shell out to real `gh` on the first
+    /// `run_until_parked`.
+    #[gpui::test]
+    fn a_view_can_be_created_as_an_entity_in_a_test_app(cx: &mut gpui::TestAppContext) {
+        let files = parse(RUST);
+        let rows = build_rows(&files);
+        let row_count = rows.len();
+        let hl = vec![Vec::new(); row_count];
+        let view = cx.new(|_| DiffView::new(files, rows, hl, Theme::dark()));
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.rows().len(), row_count);
+            assert_eq!(view.cursor, 0);
+        });
+    }
 }
