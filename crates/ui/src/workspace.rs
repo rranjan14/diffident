@@ -794,6 +794,12 @@ impl Workspace {
         }
     }
 
+    /// `tab` in the confirm step — cycle COMMENT → APPROVE → REQUEST_CHANGES →
+    /// draft.
+    ///
+    /// Starts at COMMENT and requires a deliberate keystroke to reach APPROVE:
+    /// approving by accident is the one outcome here that cannot be taken back
+    /// without another visible action on the PR.
     fn next_event(&mut self, cx: &mut Context<Self>) {
         if let Mode::Confirming(sub) = &mut self.mode {
             sub.event = match sub.event {
@@ -803,6 +809,14 @@ impl Workspace {
                 Event::Draft => Event::Comment,
             };
             cx.notify();
+        }
+    }
+
+    /// `enter` in the resolver — accept the choices and move to confirm.
+    fn advance_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Mode::Resolving(sub) = &self.mode {
+            let sub = sub.clone();
+            self.enter_mode(Mode::Confirming(sub), window, cx);
         }
     }
 
@@ -861,6 +875,69 @@ impl Workspace {
                     .text_sm()
                     .text_color(theme.text_muted)
                     .child("space toggle · enter continue · esc cancel"),
+            )
+    }
+
+    /// The confirm step: what will be sent, as what kind of review.
+    fn render_confirm(&self, sub: &Submission, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.theme.clone();
+        let (mut sending, mut rescued, mut refused) = (0, 0, None);
+        let mut body_preview = String::new();
+        if let (Some(number), Some(diff)) = (self.active_number(), self.diff()) {
+            let drafts = self.drafts.for_review(number).to_vec();
+            let view = diff.read(cx);
+            let pre = preflight(&drafts, view.files());
+            sending = pre.mappable.len();
+            rescued = sub.moved(&pre).len();
+            refused = sub.check(&pre).err();
+            body_preview = sub.body(&pre);
+        }
+
+        let kind = match sub.event {
+            Event::Comment => "comment",
+            Event::Approve => "approve",
+            Event::RequestChanges => "request changes",
+            Event::Draft => "save as pending draft",
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .w_full()
+            .p_2()
+            .border_t_1()
+            .border_color(theme.border)
+            .bg(theme.header_bg)
+            .child(
+                div()
+                    .text_color(theme.text)
+                    .child(SharedString::from(format!("submit as: {kind}"))),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(format!(
+                        "{sending} line comment(s), {rescued} moved into the body"
+                    ))),
+            )
+            .children((!body_preview.is_empty()).then(|| {
+                div()
+                    .text_sm()
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(body_preview))
+            }))
+            .children(refused.map(|r| {
+                div()
+                    .text_color(theme.removed)
+                    .child(SharedString::from(r.reason().to_string()))
+            }))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.text_muted)
+                    .child("tab change kind · cmd-enter send · esc cancel"),
             )
     }
 }
@@ -1047,6 +1124,10 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &Submit, window, cx| this.begin_submit(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleResolution, _, cx| this.toggle_resolution(cx)))
             .on_action(cx.listener(|this, _: &NextEvent, _, cx| this.next_event(cx)))
+            .on_action(cx.listener(|this, _: &AdvanceSubmit, window, cx| {
+                this.advance_submit(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CancelSubmit, window, cx| this.leave_mode(window, cx)))
             .flex()
             .size_full()
             .bg(theme.bg)
@@ -1127,6 +1208,7 @@ impl Render for Workspace {
                     .children(match &self.mode {
                         Mode::Composing(c) => Some(self.render_composer(c, cx).into_any_element()),
                         Mode::Resolving(s) => Some(self.render_resolver(s, cx).into_any_element()),
+                        Mode::Confirming(s) => Some(self.render_confirm(s, cx).into_any_element()),
                         _ => None,
                     })
                     .into_any_element(),
