@@ -302,6 +302,67 @@ pub fn set_resolved<R: GhRunner>(
     }
     Ok(())
 }
+
+/// `pullRequestReviewId` is deliberately omitted: passing one attaches the
+/// reply to a pending review of yours, which would hold it as a draft on
+/// GitHub instead of posting it. §7 batches *new* comments; a reply to someone
+/// else's thread is a direct answer and posts on its own.
+const REPLY: &str = r#"
+mutation($id: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $id, body: $body}) {
+    comment { id author { login } body }
+  }
+}
+"#;
+
+#[derive(Deserialize)]
+struct ReplyEnvelope {
+    data: ReplyData,
+}
+#[derive(Deserialize)]
+struct ReplyData {
+    #[serde(rename = "addPullRequestReviewThreadReply")]
+    payload: ReplyPayload,
+}
+#[derive(Deserialize)]
+struct ReplyPayload {
+    comment: CommentNode,
+}
+
+/// The JSON body for one reply.
+pub fn reply_body(thread_id: &str, body: &str) -> String {
+    serde_json::json!({
+        "query": REPLY,
+        "variables": { "id": thread_id, "body": body },
+    })
+    .to_string()
+}
+
+/// The comment GitHub created, decoded with the same node shape `parse_page`
+/// uses — so a reply and a fetched comment can never render differently.
+pub fn parse_reply(raw: &str) -> Result<ThreadComment, GhError> {
+    let env: ReplyEnvelope =
+        serde_json::from_str(raw).map_err(|e| GhError::BadOutput(e.to_string()))?;
+    let c = env.data.payload.comment;
+    Ok(ThreadComment {
+        id: c.id,
+        author: c.author.map(|a| a.login).unwrap_or_default(),
+        body: c.body,
+    })
+}
+
+/// Post a reply to an existing thread, returning the comment it created.
+pub fn reply<R: GhRunner>(
+    runner: &R,
+    thread_id: &str,
+    body: &str,
+) -> Result<ThreadComment, GhError> {
+    let raw = runner.run(
+        &["api", "graphql", "--input", "-"],
+        Some(&reply_body(thread_id, body)),
+    )?;
+    parse_reply(&raw)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,5 +517,49 @@ mod tests {
     #[test]
     fn a_malformed_response_is_bad_output_not_a_panic() {
         assert!(matches!(parse_resolution("not json"), Err(GhError::BadOutput(_))));
+    }
+
+    const REPLY_OK: &str = r#"{"data":{"addPullRequestReviewThreadReply":{"comment":
+        {"id":"PRRC_9","author":{"login":"octocat"},"body":"done, thanks"}}}}"#;
+
+    #[test]
+    fn a_reply_comes_back_as_the_comment_github_created() {
+        // Reusing GitHub's own answer means the pane shows the reply exactly as
+        // it now exists on the PR, with no second fetch and no guess at who
+        // the viewer is.
+        let c = parse_reply(REPLY_OK).unwrap();
+        assert_eq!(c.id, "PRRC_9");
+        assert_eq!(c.author, "octocat");
+        assert_eq!(c.body, "done, thanks");
+    }
+
+    #[test]
+    fn the_reply_addresses_the_thread_not_a_comment() {
+        // §5 gotcha 2 in mutation form: the reply attaches to
+        // pullRequestReviewThreadId. There is no comment id in this call.
+        let p: serde_json::Value = serde_json::from_str(&reply_body("PRRT_1", "hi")).unwrap();
+        assert!(
+            p["query"].as_str().unwrap().contains("pullRequestReviewThreadId"),
+            "the reply must address the thread"
+        );
+        assert_eq!(p["variables"]["id"], "PRRT_1");
+        assert_eq!(p["variables"]["body"], "hi");
+    }
+
+    #[test]
+    fn a_reply_body_with_backticks_and_newlines_survives_json_encoding() {
+        // Suggestion fences go through this path (§7), so a body full of
+        // backticks and newlines is the common case, not the exotic one.
+        let body = "try:\n```suggestion\nlet x = 1;\n```\n";
+        let p: serde_json::Value = serde_json::from_str(&reply_body("T", body)).unwrap();
+        assert_eq!(p["variables"]["body"], body);
+    }
+
+    #[test]
+    fn a_reply_travels_on_stdin_and_surfaces_its_failures() {
+        let gh = FakeGh::new().with("api graphql --input -", REPLY_OK);
+        assert_eq!(reply(&gh, "PRRT_1", "done, thanks").unwrap().body, "done, thanks");
+        assert!(gh.stdins()[0].as_ref().unwrap().contains("PRRT_1"));
+        assert!(reply(&FakeGh::new(), "PRRT_1", "x").is_err());
     }
 }
