@@ -58,6 +58,21 @@ pub enum Lifecycle {
     Submitted,
 }
 
+impl Lifecycle {
+    /// How this state reads to a reviewer looking at their own drafts.
+    ///
+    /// A pending draft is called out as living on GitHub rather than here,
+    /// because that is the difference the reviewer can act on: local ones can
+    /// still be edited or deleted, and the other two cannot.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Lifecycle::LocalDraft => "draft",
+            Lifecycle::PushedDraft => "pending on GitHub",
+            Lifecycle::Submitted => "submitted",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Comment {
     pub id: Uuid,
@@ -188,6 +203,20 @@ impl Drafts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_lifecycle_reads_differently_to_a_reviewer() {
+        // A drafts list where sent and unsent look identical is one where the
+        // reviewer cannot tell whether their submit worked.
+        let labels = [
+            Lifecycle::LocalDraft.label(),
+            Lifecycle::PushedDraft.label(),
+            Lifecycle::Submitted.label(),
+        ];
+        let unique: std::collections::HashSet<_> = labels.iter().collect();
+        assert_eq!(unique.len(), 3, "got: {labels:?}");
+        assert!(labels.iter().all(|l| !l.is_empty()));
+    }
 
     #[test]
     fn a_new_comment_is_an_editable_local_draft() {
