@@ -5,7 +5,7 @@
 //! call site, which is why the spacing looked arbitrary: there was nothing to
 //! be consistent with.
 
-use gpui::{Font, FontFeatures, FontStyle, FontWeight, Rgba, TextStyle, px, rgb};
+use gpui::{Font, FontFeatures, FontStyle, FontWeight, Rgba, SharedString, TextStyle, px, rgb};
 
 #[derive(Clone)]
 pub struct Theme {
@@ -19,11 +19,16 @@ pub struct Theme {
 
     // --- type ---
     /// Diff lines and suggestion fences. Mono, ligatures off.
-    pub font_code: &'static str,
+    ///
+    /// Owned rather than `&'static str` so the config file can name a font the
+    /// binary has never heard of — which it must, because the right mono face
+    /// on macOS is not the right one on Linux, and the name baked in at Phase 0
+    /// did not exist on the machine at all.
+    pub font_code: SharedString,
     /// Everything else: rail, file names, headings, comment prose. Proportional
     /// text beside mono code is how an editor says "someone is talking" versus
     /// "this is the file".
-    pub font_ui: &'static str,
+    pub font_ui: SharedString,
     pub code_size: f32,
     /// Every diff row's baseline height, and the uniform hint given to
     /// `ListState` before rows are measured. Not a row's actual height: a row
@@ -63,6 +68,18 @@ pub struct Theme {
     pub r_md: f32,
 }
 
+/// The platform's default faces. Both verified present at runtime on macOS;
+/// elsewhere the fallbacks are what every system ships, and the config file is
+/// how anyone disagrees.
+#[cfg(target_os = "macos")]
+const DEFAULT_CODE_FONT: &str = "SF Mono";
+#[cfg(target_os = "macos")]
+const DEFAULT_UI_FONT: &str = "SF Pro Text";
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_CODE_FONT: &str = "monospace";
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_UI_FONT: &str = "sans-serif";
+
 impl Theme {
     pub fn dark() -> Self {
         Self {
@@ -75,8 +92,8 @@ impl Theme {
 
             // Both verified present at runtime; `Zed Plex Mono` was not, and
             // had been silently falling back since Phase 0.
-            font_code: "SF Mono",
-            font_ui: "SF Pro Text",
+            font_code: DEFAULT_CODE_FONT.into(),
+            font_ui: DEFAULT_UI_FONT.into(),
             code_size: 12.5,
             line_height: 19.,
             ui_xs: 11.,
@@ -105,12 +122,65 @@ impl Theme {
         }
     }
 
+    /// The same roles at the other end of the range.
+    ///
+    /// Only the colours differ — every spacing, type and shape token is shared,
+    /// because those are decisions about layout and layout does not have a
+    /// brightness. That is the whole return on naming tokens by role: a second
+    /// palette is one function, not a second design.
+    ///
+    /// Not a mechanical inversion of `dark()`. On a light ground the diff's own
+    /// green and red have to be *darker* than the text to read as emphasis
+    /// rather than as decoration, and the accent has to lose brightness or it
+    /// vibrates against white.
+    pub fn light() -> Self {
+        Self {
+            surface: rgb(0xfbfcfd),
+            surface_raised: rgb(0xf2f4f7),
+            surface_overlay: rgb(0xffffff),
+            border_subtle: rgb(0xe3e7ec),
+            border_strong: rgb(0xc9d0d9),
+            text_primary: rgb(0x1b2029),
+            text_secondary: rgb(0x5a6472),
+            text_tertiary: rgb(0x8b95a3),
+            accent: rgb(0x2563c9),
+            accent_soft: rgb(0xe6eefb),
+            added_fg: rgb(0x1a7f37),
+            added_bg: rgb(0xe6f6ea),
+            removed_fg: rgb(0xb42318),
+            removed_bg: rgb(0xfdeceb),
+            danger: rgb(0xb42318),
+            warning: rgb(0x9a6700),
+            ..Self::dark()
+        }
+    }
+
+    /// Build the palette the config asked for, with any font it named.
+    ///
+    /// An empty font name is treated as absent rather than as a request for a
+    /// font called "" — the latter renders nothing at all, silently, which is
+    /// the exact failure this project already shipped once.
+    pub fn from_config(cfg: &diffident_session::config::Config) -> Self {
+        use diffident_session::config::ThemeChoice;
+        let mut theme = match cfg.theme {
+            ThemeChoice::Dark => Self::dark(),
+            ThemeChoice::Light => Self::light(),
+        };
+        if let Some(f) = cfg.code_font.as_deref().filter(|f| !f.trim().is_empty()) {
+            theme.font_code = f.to_string().into();
+        }
+        if let Some(f) = cfg.ui_font.as_deref().filter(|f| !f.trim().is_empty()) {
+            theme.font_ui = f.to_string().into();
+        }
+        theme
+    }
+
     /// The base style `StyledText::with_default_highlights` layers syntax
     /// colours onto.
     pub fn code_style(&self) -> TextStyle {
         TextStyle {
             color: self.text_primary.into(),
-            font_family: self.font_code.into(),
+            font_family: self.font_code.clone(),
             // A diff must show the exact characters in the file — `!=`
             // rendering as `≠` would be a lie.
             font_features: FontFeatures::disable_ligatures(),
@@ -126,7 +196,7 @@ impl Theme {
     pub fn ui_style(&self) -> TextStyle {
         TextStyle {
             color: self.text_primary.into(),
-            font_family: self.font_ui.into(),
+            font_family: self.font_ui.clone(),
             font_size: px(self.ui_md).into(),
             ..Default::default()
         }
@@ -163,8 +233,8 @@ mod tests {
         // A diff must show the exact characters in the file; `!=` rendering as
         // `≠` is a lie. Prose has no such constraint.
         let t = Theme::dark();
-        assert_eq!(t.code_style().font_family.as_ref(), t.font_code);
-        assert_eq!(t.ui_style().font_family.as_ref(), t.font_ui);
+        assert_eq!(t.code_style().font_family, t.font_code);
+        assert_eq!(t.ui_style().font_family, t.font_ui);
     }
 
     #[test]
@@ -178,5 +248,54 @@ mod tests {
         assert_ne!(t.text_primary, t.text_secondary);
         assert_ne!(t.text_secondary, t.text_tertiary);
         assert_ne!(t.accent, t.accent_soft);
+    }
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+    use diffident_session::config::{Config, ThemeChoice};
+
+    #[test]
+    fn light_and_dark_share_every_measurement_and_differ_only_in_colour() {
+        // The return on naming tokens by role: a second palette is one
+        // function, not a second design. Layout has no brightness.
+        let (d, l) = (Theme::dark(), Theme::light());
+        assert_eq!([d.s1, d.s2, d.s3, d.s4, d.s5, d.s6], [l.s1, l.s2, l.s3, l.s4, l.s5, l.s6]);
+        assert_eq!(d.line_height, l.line_height);
+        assert_eq!(d.code_size, l.code_size);
+        assert_eq!(d.r_sm, l.r_sm);
+        assert_ne!(d.surface, l.surface, "but the colours are not shared");
+    }
+
+    #[test]
+    fn light_keeps_its_text_readable_against_its_own_ground() {
+        // A palette inverted mechanically ends up with pale grey on white.
+        // Cheap proxy for contrast: on a light ground, text must be darker than
+        // the surface it sits on, and on a dark ground, lighter.
+        let lum = |c: gpui::Rgba| c.r * 0.299 + c.g * 0.587 + c.b * 0.114;
+        let l = Theme::light();
+        assert!(lum(l.text_primary) < lum(l.surface), "dark text on a light ground");
+        assert!(lum(l.text_secondary) < lum(l.surface));
+        let d = Theme::dark();
+        assert!(lum(d.text_primary) > lum(d.surface), "light text on a dark ground");
+    }
+
+    #[test]
+    fn the_config_picks_the_palette() {
+        let light = Config { theme: ThemeChoice::Light, ..Default::default() };
+        assert_eq!(Theme::from_config(&light).surface, Theme::light().surface);
+        let dark = Config { theme: ThemeChoice::Dark, ..Default::default() };
+        assert_eq!(Theme::from_config(&dark).surface, Theme::dark().surface);
+    }
+
+    #[test]
+    fn a_configured_font_wins_but_a_blank_one_does_not() {
+        // A font named "" renders nothing at all, silently — the exact failure
+        // this project shipped for seven phases. Blank means absent.
+        let named = Config { code_font: Some("Fira Code".into()), ..Default::default() };
+        assert_eq!(Theme::from_config(&named).font_code, "Fira Code");
+        let blank = Config { code_font: Some("   ".into()), ..Default::default() };
+        assert_eq!(Theme::from_config(&blank).font_code, Theme::dark().font_code);
     }
 }

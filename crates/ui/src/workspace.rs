@@ -113,6 +113,10 @@ pub struct Workspace {
     /// Sidebar width in px, dragged by the divider. Session-only — persisting
     /// it belongs with the config file (spec B).
     sidebar_width: f32,
+    /// The wrap setting new diffs start at, from the config. `w` overrides it
+    /// for the review on screen; it is not written back, because a keystroke
+    /// meant for one file should not silently edit a file on disk.
+    wrap_default: bool,
     /// `⌘B`. Collapsed, the diff owns the whole window.
     sidebar_collapsed: bool,
     focus: FocusHandle,
@@ -148,13 +152,20 @@ struct Composing {
 }
 
 impl Workspace {
+    /// `config` carries the user's file, already parsed and already defaulted —
+    /// this constructor never sees a parse failure, only the settings that
+    /// survived one. `config_error` is how the reviewer hears about a file that
+    /// did not load, once, without it ever having stopped the app opening.
     pub fn new(
         forge: Arc<dyn Forge + Send + Sync>,
         repo: Repo,
         open_pr: Option<u32>,
+        config: diffident_session::config::Config,
+        config_error: Option<String>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let theme = Theme::from_config(&config);
         let mut this = Self {
             forge,
             repo: repo.clone(),
@@ -169,11 +180,12 @@ impl Workspace {
             mode: Mode::Browsing,
             visual_anchor: None,
             composer_focus: cx.focus_handle(),
-            theme: Theme::dark(),
-            sidebar_width: 280.,
+            theme,
+            sidebar_width: config.sidebar_width,
+            wrap_default: config.wrap,
             sidebar_collapsed: false,
             focus: cx.focus_handle(),
-            error: None,
+            error: config_error,
         };
         this.refresh(open_pr, cx);
         this
@@ -409,10 +421,12 @@ impl Workspace {
         );
 
         let theme = self.theme.clone();
+        let wrap_default = self.wrap_default;
         let row = self.residency.recall_cursor(number, loaded.data.rows.len());
         let data = loaded.data.clone();
         let view = cx.new(|_| {
             let mut v = DiffView::new(data, theme);
+            v.set_wrap(wrap_default);
             v.scroll_to(row);
             v
         });
@@ -1671,7 +1685,7 @@ impl Render for Workspace {
             .flex()
             .size_full()
             .bg(theme.surface)
-            .font_family(theme.font_code)
+            .font_family(theme.font_code.clone())
             .text_color(theme.text_primary)
             .children((!self.sidebar_collapsed).then(|| {
                 div()
@@ -1883,7 +1897,7 @@ mod tests {
         // is the point: these tests exercise the bindings that ship.
         cx.update(|cx| cx.bind_keys(crate::navigate::key_bindings()));
         let (workspace, cx) = cx.add_window_view(|window, cx| {
-            let mut this = Workspace::new(Arc::new(forge), repo, None, window, cx);
+            let mut this = Workspace::new(Arc::new(forge), repo, None, Default::default(), None, window, cx);
             this.reviews.push(Review {
                 id: ReviewId {
                     repo: "o/r".into(),
@@ -2104,7 +2118,7 @@ mod tests {
             name: "r".into(),
         };
         let window =
-            cx.add_window(|window, cx| Workspace::new(forge, repo, None, window, cx));
+            cx.add_window(|window, cx| Workspace::new(forge, repo, None, Default::default(), None, window, cx));
 
         window
             .update(cx, |this, _, cx| {
@@ -2134,7 +2148,7 @@ mod tests {
             name: "r".into(),
         };
         let window =
-            cx.add_window(|window, cx| Workspace::new(forge, repo, None, window, cx));
+            cx.add_window(|window, cx| Workspace::new(forge, repo, None, Default::default(), None, window, cx));
 
         window
             .update(cx, |this, _, _| {
@@ -2214,7 +2228,7 @@ mod tests {
             name: "r".into(),
         };
         let window = cx.add_window(|window, cx| {
-            let mut this = Workspace::new(forge, repo, None, window, cx);
+            let mut this = Workspace::new(forge, repo, None, Default::default(), None, window, cx);
             // Stand the review up directly rather than driving a whole fetch:
             // the guarantee under test is about what happens *after* the
             // mutation fails, not about how the thread got here.
