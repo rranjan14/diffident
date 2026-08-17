@@ -4,10 +4,11 @@
 //! window, rather than one OS window per PR.
 
 use crate::diff_view::DiffView;
-use crate::file_list::{file_entries, reviewed_marker, status_glyph};
+use crate::file_list::{file_entries, file_row};
 use crate::loader::{LoadedReview, ReviewData, list_reviews, load_review};
 use crate::navigate::*;
 use crate::rail::rail_row;
+use crate::sidebar;
 use crate::composer::{Key, TextBuffer, key_action, scope_for_file, scope_for_line, scope_for_range};
 use crate::residency::Residency;
 use crate::submit::{Event, Resolution, Submission, preflight};
@@ -21,7 +22,7 @@ use diffident_session::store::{Session, SessionKey, Store, default_root};
 use diffident_forge::stack::next_in_stack;
 use gpui::{
     Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString,
-    Window, div, prelude::*, px,
+    Window, div, prelude::*, px, uniform_list,
 };
 
 /// How many diffs stay resident. Four covers a typical stack (§6) without
@@ -109,6 +110,11 @@ pub struct Workspace {
     /// Focus for the composer, so typing reaches it and not the diff.
     composer_focus: FocusHandle,
     theme: Theme,
+    /// Sidebar width in px, dragged by the divider. Session-only — persisting
+    /// it belongs with the config file (spec B).
+    sidebar_width: f32,
+    /// `⌘B`. Collapsed, the diff owns the whole window.
+    sidebar_collapsed: bool,
     focus: FocusHandle,
     error: Option<String>,
 }
@@ -164,6 +170,8 @@ impl Workspace {
             visual_anchor: None,
             composer_focus: cx.focus_handle(),
             theme: Theme::dark(),
+            sidebar_width: 280.,
+            sidebar_collapsed: false,
             focus: cx.focus_handle(),
             error: None,
         };
@@ -1584,78 +1592,16 @@ impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.theme.clone();
 
-        let mut rail = Vec::with_capacity(self.reviews.len());
-        for ix in 0..self.reviews.len() {
-            let selected = self.active == Some(ix);
-            let unreviewed = self.unreviewed_count(&self.reviews[ix]);
-            rail.push(
-                div()
-                    .id(("review", ix))
-                    .child(rail_row(&self.reviews[ix], selected, unreviewed, &theme))
-                    .on_click(cx.listener(move |this, _, _, cx| this.select(ix, cx))),
-            );
-        }
-
         // The file panel. Built here rather than inside the diff view because
         // clicking an entry scrolls that view — the parent owns the wiring
         // between the two panes.
-        let mut file_rows = Vec::new();
-        if let Some(diff) = self.diff() {
-            let entries = {
+        let file_count = self
+            .diff()
+            .map(|diff| {
                 let view = diff.read(cx);
-                file_entries(view.files(), view.rows())
-            };
-            for (ix, entry) in entries.into_iter().enumerate() {
-                let entry_file = diff.read(cx).files().get(ix);
-                let is_read = self.active_number().is_some_and(|n| {
-                    entry_file
-                        .map(|f| self.reviewed.is_reviewed(n, &entry.path, f.content_hash()))
-                        .unwrap_or(false)
-                });
-                let (row_ix, diff) = (entry.row_ix, diff.clone());
-                file_rows.push(
-                    div()
-                        .id(("file", row_ix))
-                        .flex()
-                        .justify_between()
-                        .gap_2()
-                        .px_2()
-                        .py_1()
-                        .text_sm()
-                        .rounded_md()
-                        .hover(|this| this.bg(theme.surface_raised))
-                        .child(div().text_color(theme.text_secondary).child(SharedString::from(
-                            format!(
-                                "{} {} {}",
-                                reviewed_marker(is_read),
-                                status_glyph(&entry.status),
-                                entry.path
-                            ),
-                        )))
-                        .child(
-                            div()
-                                .flex()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .text_color(theme.added_fg)
-                                        .child(SharedString::from(format!("+{}", entry.added))),
-                                )
-                                .child(
-                                    div()
-                                        .text_color(theme.removed_fg)
-                                        .child(SharedString::from(format!("-{}", entry.removed))),
-                                ),
-                        )
-                        .on_click(move |_, _, cx| {
-                            diff.update(cx, |view, cx| {
-                                view.scroll_to(row_ix);
-                                cx.notify();
-                            });
-                        }),
-                );
-            }
-        }
+                file_entries(view.files(), view.rows()).len()
+            })
+            .unwrap_or(0);
 
         div()
             .when_some(self.mode.key_context(), |this, ctx| this.key_context(ctx))
@@ -1709,71 +1655,108 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &CancelSubmit, window, cx| this.leave_mode(window, cx)))
             .on_action(cx.listener(|this, _: &SendReview, window, cx| this.send_review(window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
+                this.sidebar_collapsed = !this.sidebar_collapsed;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleWrap, _, cx| {
+                let Some(diff) = this.diff() else {
+                    return;
+                };
+                diff.update(cx, |view, cx| {
+                    view.toggle_wrap();
+                    cx.notify();
+                });
+            }))
             .flex()
             .size_full()
             .bg(theme.surface)
             .font_family(theme.font_code)
             .text_color(theme.text_primary)
-            .child(
+            .children((!self.sidebar_collapsed).then(|| {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_1()
-                    .w(px(300.))
+                    .w(px(self.sidebar_width))
                     .h_full()
-                    .p_2()
-                    .border_r_1()
-                    .border_color(theme.border_subtle)
+                    .bg(self.theme.surface)
+                    .child(sidebar::section_header("reviews", self.reviews.len(), &theme))
                     .child(
-                        div()
-                            .px_3()
-                            .py_2()
-                            .text_sm()
-                            .text_color(theme.text_tertiary)
-                            .child(SharedString::from(format!(
-                                "{} — {} reviews",
-                                self.repo.slug(),
-                                self.reviews.len()
-                            ))),
+                        uniform_list(
+                            "reviews",
+                            self.reviews.len(),
+                            cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
+                                let theme = this.theme.clone();
+                                range
+                                    .map(|ix| {
+                                        let selected = this.active == Some(ix);
+                                        let unreviewed = this.unreviewed_count(&this.reviews[ix]);
+                                        div()
+                                            .id(("review", ix))
+                                            .child(rail_row(
+                                                &this.reviews[ix],
+                                                selected,
+                                                unreviewed,
+                                                &theme,
+                                            ))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.select(ix, cx)
+                                            }))
+                                    })
+                                    .collect::<Vec<_>>()
+                            }),
+                        )
+                        .flex_1(),
                     )
-                    .children(rail),
-            )
-            .children((!file_rows.is_empty()).then(|| {
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .w(px(320.))
-                    .h_full()
-                    .p_2()
-                    .border_r_1()
-                    .border_color(theme.border_subtle)
-                    .children(file_rows)
+                    .child(sidebar::section_header("files", file_count, &theme))
+                    .child(
+                        uniform_list(
+                            "files",
+                            file_count,
+                            cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
+                                let theme = this.theme.clone();
+                                let Some(diff) = this.diff() else {
+                                    return Vec::new();
+                                };
+                                let entries = {
+                                    let view = diff.read(cx);
+                                    file_entries(view.files(), view.rows())
+                                };
+                                range
+                                    .map(|ix| {
+                                        let entry = &entries[ix];
+                                        let entry_file = diff.read(cx).files().get(ix);
+                                        let is_read = this.active_number().is_some_and(|n| {
+                                            entry_file
+                                                .map(|f| {
+                                                    this.reviewed.is_reviewed(
+                                                        n,
+                                                        &entry.path,
+                                                        f.content_hash(),
+                                                    )
+                                                })
+                                                .unwrap_or(false)
+                                        });
+                                        let (row_ix, diff) = (entry.row_ix, diff.clone());
+                                        div()
+                                            .id(("file", row_ix))
+                                            .child(file_row(entry, is_read, &theme))
+                                            .on_click(move |_, _, cx| {
+                                                diff.update(cx, |view, cx| {
+                                                    view.scroll_to(row_ix);
+                                                    cx.notify();
+                                                });
+                                            })
+                                    })
+                                    .collect::<Vec<_>>()
+                            }),
+                        )
+                        .flex_1(),
+                    )
             }))
-            .children({
-                let drafts = self.render_drafts();
-                let threads = self.render_threads(cx);
-                (!drafts.is_empty() || !threads.is_empty()).then(|| {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .w(px(320.))
-                        .h_full()
-                        .p_2()
-                        .border_l_1()
-                        .border_color(theme.border_subtle)
-                        .children((!drafts.is_empty()).then(|| {
-                            div()
-                                .px_2()
-                                .text_sm()
-                                .text_color(theme.text_tertiary)
-                                .child("drafts")
-                        }))
-                        .children(drafts)
-                        .children(threads)
-                })
-            })
+            .children((!self.sidebar_collapsed).then(|| {
+                sidebar::divider(&theme, cx.entity(), |v: &mut Self, w| v.sidebar_width = w)
+            }))
             .child(match self.diff() {
                 Some(diff) => div()
                     .flex()
@@ -1824,6 +1807,30 @@ impl Render for Workspace {
                         .child(text)
                         .into_any_element()
                 }
+            })
+            .children({
+                let drafts = self.render_drafts();
+                let threads = self.render_threads(cx);
+                (!drafts.is_empty() || !threads.is_empty()).then(|| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .w(px(320.))
+                        .h_full()
+                        .p_2()
+                        .border_l_1()
+                        .border_color(theme.border_subtle)
+                        .children((!drafts.is_empty()).then(|| {
+                            div()
+                                .px_2()
+                                .text_sm()
+                                .text_color(theme.text_tertiary)
+                                .child("drafts")
+                        }))
+                        .children(drafts)
+                        .children(threads)
+                })
             })
     }
 }
@@ -1916,6 +1923,37 @@ mod tests {
         cx.simulate_keystrokes("j");
         let moved = workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).cursor);
         assert_eq!(moved, start + 1, "`j` must move the cursor one row");
+    }
+
+    /// `⌘B` must work from anywhere, including while composing — it is
+    /// navigation, not content, which is why its binding is unscoped.
+    #[gpui::test]
+    fn cmd_b_collapses_and_restores_the_sidebar(cx: &mut gpui::TestAppContext) {
+        let (workspace, cx) = workspace_with_diff(cx, GitHub::new(FakeGh::new()), Vec::new());
+        assert!(!workspace.read_with(cx, |this, _| this.sidebar_collapsed));
+        cx.simulate_keystrokes("cmd-b");
+        assert!(workspace.read_with(cx, |this, _| this.sidebar_collapsed));
+        cx.simulate_keystrokes("cmd-b");
+        assert!(!workspace.read_with(cx, |this, _| this.sidebar_collapsed));
+    }
+
+    #[gpui::test]
+    fn w_toggles_soft_wrap(cx: &mut gpui::TestAppContext) {
+        let (workspace, cx) = workspace_with_diff(cx, GitHub::new(FakeGh::new()), Vec::new());
+        assert!(
+            workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).wrap()),
+            "wrap is on by default"
+        );
+        cx.simulate_keystrokes("w");
+        assert!(
+            !workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).wrap()),
+            "`w` turns wrap off"
+        );
+        cx.simulate_keystrokes("w");
+        assert!(
+            workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).wrap()),
+            "`w` turns wrap back on"
+        );
     }
 
     /// An unresolved thread anchored to `line` on the new side.
@@ -2401,5 +2439,62 @@ mod tests {
                  in the same function — the diff keeps the old selection:\n{site}"
             );
         }
+    }
+
+    /// The defect this whole plan exists to fix: the rail was a plain flex
+    /// column, so a review past the window edge could not be reached at all.
+    /// `uniform_list` both scrolls and virtualises — a 400-file PR builds ~40
+    /// elements rather than 400.
+    #[gpui::test]
+    fn every_review_is_reachable_however_many_there_are(cx: &mut gpui::TestAppContext) {
+        let (workspace, cx) = workspace_with_diff(cx, GitHub::new(FakeGh::new()), Vec::new());
+        workspace.update(cx, |this, _| {
+            for n in 2..80u32 {
+                this.reviews.push(Review {
+                    id: ReviewId { repo: "o/r".into(), number: n },
+                    title: format!("review number {n}"),
+                    branch: "b".into(),
+                    depth: 0,
+                    is_draft: false,
+                    head_sha: "abc".into(),
+                    rebased: false,
+                    state: LoadState::Idle,
+                });
+            }
+        });
+        cx.run_until_parked();
+
+        // Selecting the last one must work — under the old flex column it was
+        // rendered off-screen with no way to scroll to it.
+        workspace.update(cx, |this, cx| this.select(this.reviews.len() - 1, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            workspace.read_with(cx, |this, _| this.active_number()),
+            Some(79),
+            "the last review is selectable"
+        );
+    }
+
+    /// `select` is index-based and does not need a rendered row, so the smoke
+    /// test above cannot catch a flex-column rail. This one reads the source.
+    #[test]
+    fn the_rail_is_a_uniform_list_over_every_review() {
+        let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/workspace.rs"));
+        // Split so this test's own source does not match the needles.
+        let list = concat!("uniform", "_list(");
+        let count = concat!("self.reviews", ".len()");
+        let old = concat!(".children(", "rail)");
+        assert!(
+            src.contains(list),
+            "the rail must be a virtualised list, not a flex column"
+        );
+        assert!(
+            src.contains(count),
+            "that list's item count must be the review vec's length"
+        );
+        assert!(
+            !src.contains(old),
+            "the rail must not still push every review into a flex column"
+        );
     }
 }

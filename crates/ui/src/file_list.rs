@@ -1,4 +1,6 @@
+use crate::theme::Theme;
 use diffident_diff::{DiffFile, FileStatus, LineKind, Row};
+use gpui::{IntoElement, ParentElement, SharedString, div, prelude::*, px};
 
 /// One row of the file panel.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +68,57 @@ pub fn reviewed_marker(reviewed: bool) -> &'static str {
     if reviewed { "✓" } else { " " }
 }
 
+/// One file-panel row. The path elides in the middle so both ends stay visible.
+pub fn file_row(entry: &FileEntry, is_read: bool, theme: &Theme) -> impl IntoElement + use<> {
+    div()
+        .flex()
+        .justify_between()
+        .gap(px(theme.s2))
+        .px(px(theme.s2))
+        .py(px(theme.s1))
+        .text_size(px(theme.ui_sm))
+        .rounded_md()
+        .hover(|this| this.bg(theme.surface_raised))
+        .child(
+            div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .gap(px(theme.s1))
+                .text_color(theme.text_secondary)
+                .child(SharedString::from(format!(
+                    "{} {}",
+                    reviewed_marker(is_read),
+                    status_glyph(&entry.status),
+                )))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis_middle()
+                        .text_size(px(theme.ui_sm))
+                        .child(SharedString::from(entry.path.clone())),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(px(theme.s1))
+                .child(
+                    div()
+                        .text_color(theme.added_fg)
+                        .child(SharedString::from(format!("+{}", entry.added))),
+                )
+                .child(
+                    div()
+                        .text_color(theme.removed_fg)
+                        .child(SharedString::from(format!("-{}", entry.removed))),
+                ),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +176,18 @@ mod tests {
     #[test]
     fn an_empty_diff_lists_no_files() {
         assert!(file_entries(&[], &[]).is_empty());
+    }
+
+    /// `text_ellipsis_middle` is a no-op unless the path cluster can shrink
+    /// below the full path width. Split needles so this test does not match itself.
+    #[test]
+    fn file_row_path_can_shrink_so_it_can_ellipsize() {
+        let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/file_list.rs"));
+        let flex = concat!("flex", "_1()");
+        let min = concat!("min", "_w_0()");
+        assert!(
+            src.contains(flex) && src.contains(min),
+            "the path cluster must shrink so middle-ellipsis has a bounded width"
+        );
     }
 }

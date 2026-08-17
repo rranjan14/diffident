@@ -36,6 +36,8 @@ actions!(
         ToggleResolved,
         ReplyToThread,
         Suggest,
+        ToggleSidebar,
+        ToggleWrap,
     ]
 );
 
@@ -107,6 +109,11 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // §8 has no key for this — suggestions are net-new (§7). `p` for
         // propose; `s` is the review-level comment and `c`/`C` are taken.
         KeyBinding::new("p", Suggest, Some("Diff")),
+        // The sidebar is navigation, not content — `⌘B` matches every editor
+        // the reviewer already uses.
+        KeyBinding::new("cmd-b", ToggleSidebar, None),
+        // `w` for wrap. Free in the Diff context.
+        KeyBinding::new("w", ToggleWrap, Some("Diff")),
     ]
 }
 
@@ -333,7 +340,28 @@ mod tests {
         let before = pairs.len();
         pairs.dedup();
         assert_eq!(before, pairs.len(), "a key is bound twice in one context");
-        assert_eq!(before, 33, "every action in the actions! set needs a binding");
+        assert_eq!(before, 35, "every action in the actions! set needs a binding");
+    }
+
+    #[test]
+    fn w_is_bound_to_toggle_wrap_in_the_diff_context_only() {
+        let bindings = key_bindings();
+        let hits: Vec<_> = bindings
+            .iter()
+            .filter(|b| b.action().name().ends_with("ToggleWrap"))
+            .collect();
+        assert_eq!(hits.len(), 1, "ToggleWrap needs exactly one binding");
+        let keys = hits[0]
+            .keystrokes()
+            .iter()
+            .map(|k| k.unparse())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(keys, "w");
+        assert!(
+            format!("{:?}", hits[0].predicate()).contains("Diff"),
+            "w must not fire outside the Diff context"
+        );
     }
 
     #[test]
