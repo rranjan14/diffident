@@ -125,6 +125,22 @@ pub fn selected(threads: &[ReviewThread], cursor: usize) -> Option<&ReviewThread
     threads.get(cursor.min(threads.len().saturating_sub(1)))
 }
 
+/// Threads grouped by the diff row they render under, as owned copies.
+///
+/// `by_row` returns borrows, which cannot outlive `Workspace`'s map; the view
+/// is a separate entity and needs its own copies. Threads number in the tens,
+/// so cloning them on every sync is not worth avoiding.
+pub fn inline_groups(
+    threads: &[ReviewThread],
+    files: &[DiffFile],
+    rows: &[Row],
+) -> Vec<(usize, Vec<ReviewThread>)> {
+    by_row(&place(threads, files, rows))
+        .into_iter()
+        .map(|(row, ts)| (row, ts.into_iter().cloned().collect()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,5 +352,43 @@ mod tests {
         let placed = place(&[], &files, &rows);
         assert!(placed.is_empty());
         assert_eq!(unanchored(&placed), 0);
+    }
+
+    #[test]
+    fn inline_groups_are_owned_copies_keyed_by_row() {
+        let (files, rows) = fixture();
+        let t = [thread("a.rs", Some(2), false)];
+        let groups = inline_groups(&t, &files, &rows);
+        assert_eq!(groups.len(), 1);
+        let (row, threads) = &groups[0];
+        assert!(matches!(rows[*row], Row::Line { .. }));
+        assert_eq!(threads[0].path, "a.rs");
+    }
+
+    #[test]
+    fn several_threads_on_one_line_arrive_as_one_group() {
+        let (files, rows) = fixture();
+        let t = [thread("a.rs", Some(2), false), thread("a.rs", Some(2), false)];
+        let groups = inline_groups(&t, &files, &rows);
+        assert_eq!(groups.len(), 1, "one row");
+        assert_eq!(groups[0].1.len(), 2, "both threads under it");
+    }
+
+    #[test]
+    fn groups_come_back_in_row_order_so_the_renderer_need_not_sort() {
+        let (files, rows) = fixture();
+        let t = [thread("a.rs", Some(2), false), thread("a.rs", Some(1), false)];
+        let groups = inline_groups(&t, &files, &rows);
+        assert!(groups.windows(2).all(|w| w[0].0 < w[1].0));
+    }
+
+    #[test]
+    fn a_thread_with_no_line_in_this_diff_is_in_no_group() {
+        // It has nowhere to render inline. The right-hand pane keeps it —
+        // dropping it entirely would hide a conversation the reviewer is
+        // expected to answer.
+        let (files, rows) = fixture();
+        let t = [thread("a.rs", Some(999), false)];
+        assert!(inline_groups(&t, &files, &rows).is_empty());
     }
 }

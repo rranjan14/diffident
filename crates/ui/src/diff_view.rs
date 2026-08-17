@@ -1,6 +1,7 @@
 use crate::scrollbar::scrollbar;
 use crate::theme::Theme;
 use diffident_diff::{DiffFile, LineKind, Row};
+use diffident_forge::threads::ReviewThread;
 use diffident_highlight::Highlights;
 use gpui::{
     Bounds, Context, HighlightStyle, IntoElement, ListAlignment, ListState, ParentElement, Pixels,
@@ -26,6 +27,12 @@ pub struct DiffView {
     drag_offset: Option<Pixels>,
     /// Row the keyboard cursor is on.
     pub cursor: usize,
+    /// Threads to draw under each row, in row order (§7). Owned, because the
+    /// view outlives any borrow of the workspace's map.
+    inline: Vec<(usize, Vec<ReviewThread>)>,
+    /// Node id of the thread the reviewer has selected, so the inline copy can
+    /// show the same selection the right-hand pane does.
+    selected_thread: Option<String>,
 }
 
 impl DiffView {
@@ -51,6 +58,8 @@ impl DiffView {
             theme,
             drag_offset: None,
             cursor: 0,
+            inline: Vec::new(),
+            selected_thread: None,
         }
     }
 
@@ -82,6 +91,45 @@ impl DiffView {
 
     pub fn files(&self) -> &[DiffFile] {
         &self.files
+    }
+
+    /// Replace the inline threads and tell the list which rows changed height.
+    ///
+    /// Splices only the affected rows rather than resetting: `ListState::reset`
+    /// discards the scroll position, and having the diff jump to the top every
+    /// time someone resolves a thread would be worse than the stale heights
+    /// this is here to prevent. `splice` preserves the scroll offset unless the
+    /// spliced range contains it.
+    pub fn set_threads(
+        &mut self,
+        groups: Vec<(usize, Vec<ReviewThread>)>,
+        selected: Option<String>,
+    ) {
+        let touched: std::collections::BTreeSet<usize> = self
+            .inline
+            .iter()
+            .chain(groups.iter())
+            .map(|(row, _)| *row)
+            .collect();
+        self.inline = groups;
+        self.selected_thread = selected;
+        for row in touched {
+            if row < self.rows.len() {
+                self.list.splice(row..row + 1, 1);
+            }
+        }
+    }
+
+    /// The threads that render under row `ix`, if any.
+    ///
+    /// Unused until Task 3 wires it into `render`.
+    #[allow(dead_code)]
+    fn threads_at(&self, ix: usize) -> &[ReviewThread] {
+        self.inline
+            .iter()
+            .find(|(row, _)| *row == ix)
+            .map(|(_, ts)| ts.as_slice())
+            .unwrap_or_default()
     }
 
     /// Scroll so `ix` is visible. Used by the file panel and by navigation.

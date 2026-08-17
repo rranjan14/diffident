@@ -349,6 +349,7 @@ impl Workspace {
         if let Some(active) = self.active_number() {
             self.residency.activate(active);
         }
+        self.sync_threads(cx);
     }
 
     fn move_cursor(&mut self, f: impl Fn(&[diffident_diff::Row], usize) -> usize, cx: &mut Context<Self>) {
@@ -716,6 +717,7 @@ impl Workspace {
                             t.comments.push(comment);
                         }
                         this.error = None;
+                        this.sync_threads(cx);
                     }
                     // The text is gone from the composer and was never a draft.
                     // Saying so is the only thing standing between the reviewer
@@ -1116,6 +1118,24 @@ impl Workspace {
         self.move_cursor(move |rows, ix| half_page(rows, ix, distance, down), cx);
     }
 
+    /// Push the active review's threads into its diff view.
+    ///
+    /// **Call this from every place that changes `threads` or `thread_cursor`.**
+    /// The view holds its own copies, and a stale copy means the reviewer is
+    /// looking at a conversation that has already been resolved or replied to.
+    fn sync_threads(&mut self, cx: &mut Context<Self>) {
+        let (Some(number), Some(diff)) = (self.active_number(), self.diff()) else {
+            return;
+        };
+        let threads = self.threads.get(&number).cloned().unwrap_or_default();
+        let selected = crate::threads::selected(&threads, self.thread_cursor).map(|t| t.id.clone());
+        diff.update(cx, |view, cx| {
+            let groups = crate::threads::inline_groups(&threads, view.files(), view.rows());
+            view.set_threads(groups, selected);
+            cx.notify();
+        });
+    }
+
     /// `t` / `T` — move between the conversations on this PR.
     fn step_thread(&mut self, delta: isize, cx: &mut Context<Self>) {
         let Some(number) = self.active_number() else {
@@ -1123,6 +1143,7 @@ impl Workspace {
         };
         let count = self.threads.get(&number).map_or(0, Vec::len);
         self.thread_cursor = crate::threads::step(count, self.thread_cursor, delta);
+        self.sync_threads(cx);
         cx.notify();
     }
 
@@ -1163,6 +1184,7 @@ impl Workspace {
                             t.is_resolved = want;
                         }
                         this.error = None;
+                        this.sync_threads(cx);
                     }
                     Err(e) => this.error = Some(format!("could not update the thread: {e}")),
                 }
@@ -1901,6 +1923,30 @@ mod tests {
             unwired.is_empty(),
             "these actions are bound to keys but have no on_action handler, so \
              their keystrokes are silently swallowed: {unwired:?}"
+        );
+    }
+
+    #[test]
+    fn every_mutation_of_threads_syncs_the_view() {
+        // `DiffView` holds its own copies of the threads. A site that changes
+        // `self.threads` or `self.thread_cursor` without calling
+        // `sync_threads` leaves the reviewer looking at a conversation that
+        // has already been resolved or replied to, and nothing fails.
+        //
+        // What this catches is a sync being *deleted* — during a refactor of
+        // one of the four sites, say. It cannot catch a fifth mutation site
+        // being added without one; no string match can. That case is on the
+        // reviewer, which is why `sync_threads` says so in its own doc.
+        let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/workspace.rs"));
+        // Split so this test's own source does not match the needle it is
+        // searching for — the file it reads is the file it lives in.
+        let needle = concat!(".sync_", "threads(cx)");
+        let calls = src.matches(needle).count();
+        assert!(
+            calls >= 4,
+            "expected four call sites (apply, step_thread, toggle_resolved, \
+             post_reply), found {calls} — a site that mutates threads was \
+             added without syncing the view"
         );
     }
 }
