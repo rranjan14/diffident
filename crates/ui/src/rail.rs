@@ -51,17 +51,17 @@ pub fn rail_row(
         .pr_3()
         .pl(px(12. + indent_px(review.depth)))
         .rounded_md()
-        .when(selected, |this| this.bg(theme.row_selected))
-        .hover(|this| this.bg(theme.row_hover))
+        .when(selected, |this| this.bg(theme.accent_soft))
+        .hover(|this| this.bg(theme.surface_raised))
         .child(
             div()
-                .text_color(theme.text)
+                .text_color(theme.text_primary)
                 .child(SharedString::from(format!("{connector}{}", review.branch))),
         )
         .child(
             div()
                 .text_sm()
-                .text_color(theme.text_muted)
+                .text_color(theme.text_secondary)
                 .child(SharedString::from(rail_label(review, unreviewed))),
         )
 }
