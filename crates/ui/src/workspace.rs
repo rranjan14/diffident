@@ -1003,6 +1003,20 @@ impl Workspace {
                     .into_any_element(),
             );
         }
+
+        // The resolver modal lists its keys; this pane had none, and moving
+        // resolve off plain `space` made it unguessable without a hint.
+        if !placed.is_empty() {
+            out.push(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_sm()
+                    .text_color(theme.text_muted)
+                    .child("t/T select · shift-space resolve · a reply")
+                    .into_any_element(),
+            );
+        }
         out
     }
 
