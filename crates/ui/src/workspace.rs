@@ -72,6 +72,9 @@ pub struct Workspace {
     store: Store,
     /// Local draft comments, per PR (§7). Outlives the diffs in `residency`.
     drafts: Drafts,
+    /// Threads already on each PR, keyed by number. Outlives the diff in
+    /// `residency` for the same reason drafts do.
+    threads: std::collections::HashMap<u32, Vec<diffident_forge::threads::ReviewThread>>,
     /// What the window is doing. One value, so two full-window states cannot
     /// both be active — which three separate `Option`s would eventually allow.
     mode: Mode,
@@ -103,6 +106,7 @@ impl Workspace {
             reviewed: Reviewed::new(),
             store: Store::new(default_root()),
             drafts: Drafts::new(),
+            threads: std::collections::HashMap::new(),
             mode: Mode::Browsing,
             visual_anchor: None,
             composer_focus: cx.focus_handle(),
@@ -289,6 +293,7 @@ impl Workspace {
         self.drafts
             .restore(number, saved.comments_at(&loaded.head_sha).to_vec());
         self.reviewed.restore(number, saved.reviewed);
+        self.threads.insert(number, loaded.threads.clone());
 
         let theme = self.theme.clone();
         let row = self.residency.recall_cursor(number, loaded.rows.len());
@@ -674,6 +679,105 @@ impl Workspace {
                     .into_any_element()
             })
             .collect()
+    }
+
+    /// Existing conversations on this PR, grouped by the line they sit on.
+    ///
+    /// Threads that could not be anchored are still listed, under a heading
+    /// that says so — a conversation the reviewer cannot see is one they will
+    /// answer twice or not at all.
+    fn render_threads(&self, cx: &Context<Self>) -> Vec<gpui::AnyElement> {
+        let theme = &self.theme;
+        let (Some(number), Some(diff)) = (self.active_number(), self.diff()) else {
+            return Vec::new();
+        };
+        let Some(threads) = self.threads.get(&number) else {
+            return Vec::new();
+        };
+        let view = diff.read(cx);
+        let placed = crate::threads::place(threads, view.files(), view.rows());
+        let lost = crate::threads::unanchored(&placed);
+
+        let mut out: Vec<gpui::AnyElement> = Vec::new();
+        for p in &placed {
+            let t = p.thread;
+            let where_ = match p.row {
+                Some(_) => format!("{}:{}", t.path, t.anchor_line().unwrap_or(0)),
+                None => format!("{} (not in this diff)", t.path),
+            };
+            let status = if t.is_resolved {
+                "resolved"
+            } else if t.is_outdated {
+                "outdated"
+            } else {
+                ""
+            };
+            out.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .child(
+                        div()
+                            .flex()
+                            .justify_between()
+                            .gap_2()
+                            .text_sm()
+                            .child(
+                                div()
+                                    .text_color(if t.is_resolved || !p.is_anchored() {
+                                        theme.text_muted
+                                    } else {
+                                        theme.text
+                                    })
+                                    .child(SharedString::from(where_)),
+                            )
+                            .child(
+                                div()
+                                    .text_color(theme.text_muted)
+                                    .child(SharedString::from(status.to_string())),
+                            ),
+                    )
+                    .children(t.comments.iter().map(|c| {
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.text_muted)
+                                    .child(SharedString::from(if c.author.is_empty() {
+                                        "(deleted account)".to_string()
+                                    } else {
+                                        c.author.clone()
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .text_color(theme.text_muted)
+                                    .child(SharedString::from(c.body.clone())),
+                            )
+                    }))
+                    .into_any_element(),
+            );
+        }
+
+        if lost > 0 {
+            out.push(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_sm()
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(format!(
+                        "{lost} thread(s) refer to code not in this diff"
+                    )))
+                    .into_any_element(),
+            );
+        }
+        out
     }
 
     /// The storage key for one review.
@@ -1281,7 +1385,8 @@ impl Render for Workspace {
             }))
             .children({
                 let drafts = self.render_drafts();
-                (!drafts.is_empty()).then(|| {
+                let threads = self.render_threads(cx);
+                (!drafts.is_empty() || !threads.is_empty()).then(|| {
                     div()
                         .flex()
                         .flex_col()
@@ -1291,14 +1396,22 @@ impl Render for Workspace {
                         .p_2()
                         .border_l_1()
                         .border_color(theme.border)
-                        .child(
+                        .children((!drafts.is_empty()).then(|| {
                             div()
                                 .px_2()
                                 .text_sm()
                                 .text_color(theme.text_muted)
-                                .child("drafts"),
-                        )
+                                .child("drafts")
+                        }))
                         .children(drafts)
+                        .children((!threads.is_empty()).then(|| {
+                            div()
+                                .px_2()
+                                .text_sm()
+                                .text_color(theme.text_muted)
+                                .child("threads")
+                        }))
+                        .children(threads)
                 })
             })
             .child(match self.diff() {
