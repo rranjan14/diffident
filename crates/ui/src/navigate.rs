@@ -25,6 +25,8 @@ actions!(
         Submit,
         ToggleResolution,
         NextEvent,
+        AdvanceSubmit,
+        CancelSubmit,
         NextReview,
         PrevReview,
         Refresh,
@@ -72,6 +74,9 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // Only meaningful inside the resolver; scoped so they cannot fire while
         // the reviewer is reading a diff.
         KeyBinding::new("space", ToggleResolution, Some("Resolver")),
+        KeyBinding::new("enter", AdvanceSubmit, Some("Resolver")),
+        KeyBinding::new("escape", CancelSubmit, Some("Resolver")),
+        KeyBinding::new("escape", CancelSubmit, Some("Confirm")),
         KeyBinding::new("tab", NextEvent, Some("Confirm")),
         KeyBinding::new("ctrl-tab", NextReview, None),
         KeyBinding::new("ctrl-shift-tab", PrevReview, None),
@@ -283,32 +288,27 @@ mod tests {
 
     #[test]
     fn every_declared_action_has_exactly_one_binding() {
-        // An action bound to nothing silently swallows its key; the same key
-        // bound twice *in the same context* fires whichever the keymap resolves
-        // first, which is a coin flip. The same keystroke in two contexts is
-        // fine — `tab` is NextUnreviewed while reading and NextEvent while
-        // confirming, and only one of those contexts is live at a time.
+        // An action bound to nothing silently swallows its key. A key bound
+        // twice *in the same context* fires whichever the keymap resolves
+        // first, which is a coin flip — but the same key in different contexts
+        // is how modal keymaps work, so the pair is what must be unique.
         let bindings = key_bindings();
-        let mut keys: Vec<String> = bindings
+        let mut pairs: Vec<String> = bindings
             .iter()
             .map(|b| {
-                let strokes = b
+                let keys = b
                     .keystrokes()
                     .iter()
                     .map(|k| k.unparse())
                     .collect::<Vec<_>>()
                     .join(" ");
-                let ctx = b
-                    .predicate()
-                    .map(|p| p.to_string())
-                    .unwrap_or_default();
-                format!("{strokes}\t{ctx}")
+                format!("{:?}::{keys}", b.predicate())
             })
             .collect();
-        keys.sort();
-        let before = keys.len();
-        keys.dedup();
-        assert_eq!(before, keys.len(), "a key is bound twice in the same context");
-        assert_eq!(before, 24, "every action in the actions! set needs a binding");
+        pairs.sort();
+        let before = pairs.len();
+        pairs.dedup();
+        assert_eq!(before, pairs.len(), "a key is bound twice in one context");
+        assert_eq!(before, 27, "every action in the actions! set needs a binding");
     }
 }
