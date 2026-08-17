@@ -13,8 +13,9 @@ use std::ops::Range;
 /// One review's diff, rendered as a virtualised list over the flat row model.
 ///
 /// Sole owner of the element choice: nothing outside this file knows that
-/// `uniform_list` is in use, so the Phase 7 swap to `list()` for variable-height
-/// inline comment rows touches this file only (§3).
+/// `list()` is in use rather than `uniform_list`. That choice is what lets a
+/// row's height vary, which is what lets a thread render inline under the
+/// line it replies to (§3, §7).
 pub struct DiffView {
     files: Vec<DiffFile>,
     rows: Vec<Row>,
@@ -121,9 +122,6 @@ impl DiffView {
     }
 
     /// The threads that render under row `ix`, if any.
-    ///
-    /// Unused until Task 3 wires it into `render`.
-    #[allow(dead_code)]
     fn threads_at(&self, ix: usize) -> &[ReviewThread] {
         self.inline
             .iter()
@@ -194,7 +192,7 @@ impl DiffView {
                         )
                     })
                     .collect();
-                div()
+                let code = div()
                     .flex()
                     .h(px(theme.line_height))
                     .when(ix == self.cursor, |this| this.bg(theme.row_selected))
@@ -213,6 +211,23 @@ impl DiffView {
                     .child(div().w(px(12.)).child(sigil))
                     .child(
                         StyledText::new(line.text.clone()).with_default_highlights(&style, ranges),
+                    );
+
+                let threads = self.threads_at(ix);
+                if threads.is_empty() {
+                    // The overwhelmingly common case. Returning the bare line
+                    // keeps its measured height exactly one line, which is what
+                    // the uniform hint assumes.
+                    return code.into_any_element();
+                }
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(code)
+                    .children(
+                        threads
+                            .iter()
+                            .map(|t| self.render_inline_thread(t, theme).into_any_element()),
                     )
                     .into_any_element()
             }
@@ -228,6 +243,81 @@ impl DiffView {
                 .into_any_element(),
             Row::Spacer => div().h(px(theme.line_height)).into_any_element(),
         }
+    }
+
+    /// One conversation, drawn under the line it refers to.
+    ///
+    /// Indented past the gutter so it reads as attached to the code rather
+    /// than as another line of it, and boxed so a long comment cannot be
+    /// mistaken for the file's contents.
+    fn render_inline_thread(&self, thread: &ReviewThread, theme: &Theme) -> impl IntoElement {
+        let is_selected = self.selected_thread.as_deref() == Some(thread.id.as_str());
+        let status = if thread.is_resolved {
+            "resolved"
+        } else if thread.is_outdated {
+            "outdated"
+        } else {
+            "open"
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            // Clears the 48px line-number gutter and the 12px sigil column, so
+            // the thread starts where the code does.
+            .ml(px(60.))
+            .my_1()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(theme.header_bg)
+            .border_l_2()
+            .border_color(if is_selected {
+                theme.text
+            } else {
+                theme.border
+            })
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(status.to_string())),
+            )
+            .children(thread.comments.iter().map(|c| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(if c.author.is_empty() {
+                                "(deleted account)".to_string()
+                            } else {
+                                c.author.clone()
+                            })),
+                    )
+                    .children(crate::suggest::segments(&c.body).into_iter().map(|seg| {
+                        match seg {
+                            crate::suggest::Segment::Text(text) => div()
+                                .text_color(if thread.is_resolved {
+                                    theme.text_muted
+                                } else {
+                                    theme.text
+                                })
+                                .child(SharedString::from(text)),
+                            crate::suggest::Segment::Suggestion(text) => div()
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .bg(theme.added_bg)
+                                .border_l_2()
+                                .border_color(theme.added)
+                                .text_color(theme.added)
+                                .child(SharedString::from(text)),
+                        }
+                    }))
+            }))
     }
 }
 
