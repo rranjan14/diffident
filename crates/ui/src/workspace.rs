@@ -86,12 +86,15 @@ pub struct Workspace {
     store: Store,
     /// Local draft comments, per PR (§7). Outlives the diffs in `residency`.
     drafts: Drafts,
-    /// Threads already on each PR, keyed by number. Outlives the diff in
-    /// `residency` for the same reason drafts do.
-    threads: std::collections::HashMap<u32, Vec<diffident_forge::threads::ReviewThread>>,
-    /// Why threads are missing for a review, when they are. Kept apart from
-    /// `error` (the rail's) because this one is about one pane, not the app.
-    threads_error: std::collections::HashMap<u32, String>,
+    /// Threads already on each PR, or why they are missing. Outlives the diff
+    /// in `residency` for the same reason drafts do.
+    ///
+    /// One map rather than two, because "no threads" and "we could not find
+    /// out" are one fact with two values, and splitting them meant every
+    /// reader had to consult the other map to know which it was looking at.
+    /// The error stays out of `error` (the rail's) because it is about one
+    /// pane, not the app.
+    threads: std::collections::HashMap<u32, Result<Vec<diffident_forge::threads::ReviewThread>, String>>,
     /// Which thread in the right-hand pane the reviewer is acting on.
     ///
     /// Not per-PR: switching reviews resets it, because carrying "thread 3"
@@ -156,7 +159,6 @@ impl Workspace {
             store: Store::new(default_root()),
             drafts: Drafts::new(),
             threads: std::collections::HashMap::new(),
-            threads_error: std::collections::HashMap::new(),
             thread_cursor: 0,
             mode: Mode::Browsing,
             visual_anchor: None,
@@ -256,6 +258,20 @@ impl Workspace {
         self.residency
             .get(self.active_number()?)
             .map(|(_, view)| view.clone())
+    }
+
+    /// The threads on `number`, or none when the fetch failed.
+    ///
+    /// Callers that act on a thread — select, resolve, reply — cannot do
+    /// anything useful with the failure, so this flattens it away rather than
+    /// making each of them decide. Only `render_threads`, which has to tell the
+    /// reviewer *why* the pane is empty, looks at the `Result` itself.
+    fn threads_of(&self, number: u32) -> Vec<diffident_forge::threads::ReviewThread> {
+        self.threads
+            .get(&number)
+            .and_then(|t| t.as_ref().ok())
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The active review's parsed diff, without borrowing the view.
@@ -364,11 +380,13 @@ impl Workspace {
         self.drafts
             .restore(number, saved.comments_at(&loaded.head_sha).to_vec());
         self.reviewed.restore(number, saved.reviewed);
-        self.threads.insert(number, loaded.threads.clone());
-        match &loaded.threads_error {
-            Some(why) => self.threads_error.insert(number, why.clone()),
-            None => self.threads_error.remove(&number),
-        };
+        self.threads.insert(
+            number,
+            match &loaded.threads_error {
+                Some(why) => Err(why.clone()),
+                None => Ok(loaded.threads.clone()),
+            },
+        );
 
         let theme = self.theme.clone();
         let row = self.residency.recall_cursor(number, loaded.data.rows.len());
@@ -477,10 +495,10 @@ impl Workspace {
         let Some(number) = self.active_number() else {
             return;
         };
-        let Some((thread_id, on)) = self
-            .threads
-            .get(&number)
-            .and_then(|ts| crate::threads::selected(ts, self.thread_cursor))
+        let Some((thread_id, on)) = crate::threads::selected(
+            &self.threads_of(number),
+            self.thread_cursor,
+        )
             .map(|t| {
                 (
                     t.id.clone(),
@@ -755,6 +773,7 @@ impl Workspace {
                         if let Some(t) = this
                             .threads
                             .get_mut(&number)
+                            .and_then(|ts| ts.as_mut().ok())
                             .and_then(|ts| ts.iter_mut().find(|t| t.id == target))
                         {
                             t.comments.push(comment);
@@ -928,11 +947,10 @@ impl Workspace {
         };
         // The notice must render even with no threads: an empty pane reads as
         // "nobody has reviewed this", which is a different and wrong statement.
-        let failed = self.threads_error.get(&number).cloned();
-        let threads = match self.threads.get(&number) {
-            Some(t) => t.as_slice(),
-            None if failed.is_none() => return Vec::new(),
-            None => &[],
+        let (threads, failed) = match self.threads.get(&number) {
+            Some(Ok(t)) => (t.as_slice(), None),
+            Some(Err(why)) => (&[][..], Some(why.clone())),
+            None => return Vec::new(),
         };
         let view = diff.read(cx);
         let placed = crate::threads::place(threads, view.files(), view.rows());
@@ -1173,7 +1191,7 @@ impl Workspace {
         let Some((data, diff)) = self.residency.get(number).cloned() else {
             return;
         };
-        let threads = self.threads.get(&number).cloned().unwrap_or_default();
+        let threads = self.threads_of(number);
         // The cursor belongs to the review on screen; a background review has
         // no selection to draw.
         let selected = (self.active_number() == Some(number))
@@ -1201,7 +1219,7 @@ impl Workspace {
         let Some(number) = self.active_number() else {
             return;
         };
-        let count = self.threads.get(&number).map_or(0, Vec::len);
+        let count = self.threads_of(number).len();
         self.thread_cursor = crate::threads::step(count, self.thread_cursor, delta);
         self.sync_threads(cx);
         // Scroll the newly selected conversation into view. Since anchored
@@ -1210,7 +1228,7 @@ impl Workspace {
         // broken. An unanchored thread has no row to scroll to — it is listed
         // in the pane instead, so leave the diff where it is.
         let cursor = self.thread_cursor;
-        let threads = self.threads.get(&number).cloned().unwrap_or_default();
+        let threads = self.threads_of(number);
         if let Some(diff) = self.diff() {
             diff.update(cx, |view, cx| {
                 let placed = crate::threads::place(&threads, view.files(), view.rows());
@@ -1233,11 +1251,11 @@ impl Workspace {
         let Some(number) = self.active_number() else {
             return;
         };
-        let Some((id, want)) = self
-            .threads
-            .get(&number)
-            .and_then(|ts| crate::threads::selected(ts, self.thread_cursor))
-            .map(|t| (t.id.clone(), !t.is_resolved))
+        let Some((id, want)) = crate::threads::selected(
+            &self.threads_of(number),
+            self.thread_cursor,
+        )
+        .map(|t| (t.id.clone(), !t.is_resolved))
         else {
             return;
         };
@@ -1256,6 +1274,7 @@ impl Workspace {
                         if let Some(t) = this
                             .threads
                             .get_mut(&number)
+                            .and_then(|ts| ts.as_mut().ok())
                             .and_then(|ts| ts.iter_mut().find(|t| t.id == target))
                         {
                             t.is_resolved = want;
@@ -1871,6 +1890,45 @@ mod tests {
         }
     }
 
+    /// "Nobody has commented" and "we could not find out" are different
+    /// statements, and the reviewer acts differently on each. They used to be
+    /// two maps whose combination every reader had to reconstruct by hand;
+    /// now one value carries both, and a review nobody has fetched yet is a
+    /// third thing again — absent, not empty.
+    #[gpui::test]
+    fn an_unfetched_an_empty_and_a_failed_review_are_three_different_states(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let forge = Arc::new(GitHub::new(FakeGh::new()));
+        let repo = diffident_forge::Repo {
+            owner: "o".into(),
+            name: "r".into(),
+        };
+        let window =
+            cx.add_window(|window, cx| Workspace::new(forge, repo, None, window, cx));
+
+        window
+            .update(cx, |this, _, _| {
+                this.threads.insert(1, Ok(Vec::new()));
+                this.threads.insert(2, Err("rate limited".into()));
+
+                assert!(!this.threads.contains_key(&3), "never fetched");
+                assert!(
+                    this.threads.get(&1).is_some_and(|t| t.is_ok()),
+                    "fetched, and there is genuinely nothing there"
+                );
+                assert!(
+                    this.threads.get(&2).is_some_and(|t| t.is_err()),
+                    "fetched and failed — not the same as having none"
+                );
+
+                // Everything that acts on a thread sees the failure as "no
+                // threads to act on", so none of them has to handle it.
+                assert!(this.threads_of(2).is_empty());
+            })
+            .unwrap();
+    }
+
     /// The LRU is what bounds memory: a large diff is tens of MB (§10), and
     /// four stay resident. Sharing the parsed diff behind an `Arc` put a second
     /// handle in play, so this pins the thing that would otherwise rot in
@@ -1945,7 +2003,7 @@ mod tests {
                 state: LoadState::Idle,
             });
             this.active = Some(0);
-            this.threads.insert(1, vec![open_thread()]);
+            this.threads.insert(1, Ok(vec![open_thread()]));
             this
         });
 
@@ -1957,7 +2015,7 @@ mod tests {
         window
             .update(cx, |this, _, _| {
                 assert!(
-                    !this.threads[&1][0].is_resolved,
+                    !this.threads_of(1)[0].is_resolved,
                     "GitHub rejected the write, so the thread must still read open"
                 );
                 assert!(
