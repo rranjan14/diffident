@@ -8,10 +8,12 @@ use crate::file_list::{file_entries, reviewed_marker, status_glyph};
 use crate::loader::{LoadedReview, list_reviews, load_review};
 use crate::navigate::*;
 use crate::rail::rail_row;
+use crate::composer::{Key, TextBuffer, key_action, scope_for_file, scope_for_line, scope_for_range};
 use crate::residency::Residency;
 use crate::theme::Theme;
 use diffident_forge::{Repo, gh::Gh, github::GitHub};
 use diffident_model::{LoadState, Review};
+use diffident_model::comment::{Comment, CommentScope, Drafts, Side};
 use diffident_model::reviewed::Reviewed;
 use diffident_session::store::{Session, SessionKey, Store, default_root};
 use diffident_forge::stack::next_in_stack;
@@ -40,9 +42,26 @@ pub struct Workspace {
     reviewed: Reviewed,
     /// Where review progress is persisted. One file per PR (§7).
     store: Store,
+    /// Local draft comments, per PR (§7). Outlives the diffs in `residency`.
+    drafts: Drafts,
+    /// The comment being written, if any.
+    composing: Option<Composing>,
+    /// Where a `v` visual selection began. `c` turns anchor..cursor into a
+    /// range comment.
+    visual_anchor: Option<usize>,
+    /// Focus for the composer, so typing reaches it and not the diff.
+    composer_focus: FocusHandle,
     theme: Theme,
     focus: FocusHandle,
     error: Option<String>,
+}
+
+/// A comment being written.
+struct Composing {
+    /// What it will attach to, decided when the composer opened rather than
+    /// when it closes — the cursor is free to move underneath.
+    scope: CommentScope,
+    buffer: TextBuffer,
 }
 
 impl Workspace {
@@ -54,6 +73,10 @@ impl Workspace {
             residency: Residency::new(RESIDENT),
             reviewed: Reviewed::new(),
             store: Store::new(default_root()),
+            drafts: Drafts::new(),
+            composing: None,
+            visual_anchor: None,
+            composer_focus: cx.focus_handle(),
             theme: Theme::dark(),
             focus: cx.focus_handle(),
             error: None,
@@ -223,11 +246,16 @@ impl Workspace {
                     .iter()
                     .map(|f| (f.display_path().to_string(), f.content_hash()))
                     .collect(),
+                head_sha: loaded.head_sha.clone(),
             };
         }
         // Reattach saved progress. Marks whose hash no longer matches simply
         // read as unread, so nothing needs filtering here (§7).
         let saved = self.store.load(&self.session_key(number));
+        // Drafts reattach only at the head they were written on — otherwise
+        // their line anchors point into a diff that no longer exists (§7).
+        self.drafts
+            .restore(number, saved.comments_at(&loaded.head_sha).to_vec());
         self.reviewed.restore(number, saved.reviewed);
 
         let theme = self.theme.clone();
@@ -285,6 +313,258 @@ impl Workspace {
         }
     }
 
+    /// Open the composer for `scope`, seeded from any draft already on it.
+    ///
+    /// Re-opening the same anchor edits that draft rather than stacking a
+    /// second one on the same line, which is almost never what is meant.
+    fn compose(&mut self, scope: CommentScope, window: &mut Window, cx: &mut Context<Self>) {
+        let existing = self
+            .active_number()
+            .map(|n| self.drafts.for_review(n))
+            .unwrap_or_default()
+            .iter()
+            .find(|c| c.scope == scope && c.is_editable())
+            .map(|c| c.body.clone());
+        self.composing = Some(Composing {
+            buffer: existing
+                .map(|b| TextBuffer::from_text(&b))
+                .unwrap_or_default(),
+            scope,
+        });
+        self.visual_anchor = None;
+        self.composer_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// `c` — line comment, or a range comment when a `v` selection is open.
+    fn comment_on_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(diff) = self.diff() else { return };
+        let scope = {
+            let view = diff.read(cx);
+            match self.visual_anchor {
+                Some(anchor) => scope_for_range(view.files(), view.rows(), anchor, view.cursor),
+                None => scope_for_line(view.files(), view.rows(), view.cursor),
+            }
+        };
+        if let Some(scope) = scope {
+            self.compose(scope, window, cx);
+        }
+    }
+
+    /// `C` — a comment on the whole file the cursor is in.
+    fn comment_on_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(diff) = self.diff() else { return };
+        let scope = {
+            let view = diff.read(cx);
+            scope_for_file(view.files(), view.rows(), view.cursor)
+        };
+        if let Some(scope) = scope {
+            self.compose(scope, window, cx);
+        }
+    }
+
+    /// `v` — start or clear a visual selection at the cursor.
+    fn toggle_visual(&mut self, cx: &mut Context<Self>) {
+        self.visual_anchor = match self.visual_anchor {
+            Some(_) => None,
+            None => self.diff().map(|d| d.read(cx).cursor),
+        };
+        cx.notify();
+    }
+
+    /// `x` — delete the newest draft anchored where the cursor is.
+    fn delete_draft(&mut self, cx: &mut Context<Self>) {
+        let (Some(number), Some(diff)) = (self.active_number(), self.diff()) else {
+            return;
+        };
+        let here = {
+            let view = diff.read(cx);
+            scope_for_line(view.files(), view.rows(), view.cursor)
+                .or_else(|| scope_for_file(view.files(), view.rows(), view.cursor))
+        };
+        let Some(here) = here else { return };
+        let target = self
+            .drafts
+            .for_review(number)
+            .iter()
+            .rev()
+            .find(|c| c.scope == here && c.is_editable())
+            .map(|c| c.id);
+        if let Some(id) = target {
+            self.drafts.remove(number, id);
+            self.persist(number);
+            cx.notify();
+        }
+    }
+
+    /// A keystroke while the composer has focus.
+    fn composer_key(&mut self, key: &Key, cx: &mut Context<Self>) {
+        let Some(composing) = self.composing.as_mut() else {
+            return;
+        };
+        match key {
+            Key::Insert(text) => composing.buffer.insert(text),
+            Key::Newline => composing.buffer.newline(),
+            Key::Backspace => composing.buffer.backspace(),
+            Key::Delete => composing.buffer.delete(),
+            Key::Left => composing.buffer.left(),
+            Key::Right => composing.buffer.right(),
+            Key::Up => composing.buffer.up(),
+            Key::Down => composing.buffer.down(),
+            Key::Home => composing.buffer.home(),
+            Key::End => composing.buffer.end(),
+            Key::Cancel => self.composing = None,
+            Key::Save => self.save_draft(),
+            Key::Ignore => return,
+        }
+        cx.notify();
+    }
+
+    /// Turn the composer's contents into a draft and close it.
+    ///
+    /// A blank comment closes without saving rather than storing an empty
+    /// draft the reviewer would then have to delete.
+    fn save_draft(&mut self) {
+        let Some(composing) = self.composing.take() else {
+            return;
+        };
+        let Some(number) = self.active_number() else {
+            return;
+        };
+        if composing.buffer.is_blank() {
+            return;
+        }
+        let body = composing.buffer.text();
+        // Replace any draft already on this exact anchor — `compose` seeded the
+        // buffer from it, so keeping both would duplicate the text.
+        if let Some(old) = self
+            .drafts
+            .for_review(number)
+            .iter()
+            .find(|c| c.scope == composing.scope && c.is_editable())
+            .map(|c| c.id)
+        {
+            self.drafts.remove(number, old);
+        }
+        let comment = match composing.scope {
+            CommentScope::Review => Comment::new_review(&body),
+            CommentScope::File { ref path } => Comment::new_file(path, &body),
+            CommentScope::Line {
+                ref path,
+                line,
+                side,
+            } => Comment::new_line(path, line, side, &body),
+            CommentScope::Range {
+                ref path,
+                start_line,
+                end_line,
+                side,
+            } => Comment::new_range(path, start_line, end_line, side, &body),
+        };
+        self.drafts.add(number, comment);
+        self.persist(number);
+    }
+
+    /// The composer panel: what it attaches to, the text, and how to finish.
+    fn render_composer(&self, composing: &Composing, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.theme.clone();
+        let (cur_line, cur_col) = composing.buffer.cursor();
+
+        let mut lines = Vec::new();
+        for (ix, text) in composing.buffer.lines().iter().enumerate() {
+            let row = div().flex().h(px(theme.line_height));
+            lines.push(if ix == cur_line {
+                // The caret is a thin div between two spans rather than a
+                // character spliced into the text: inline layout puts it in
+                // exactly the right place with no font measurement, and it
+                // does not shift what the reviewer typed.
+                let (before, after) = text.split_at(cur_col);
+                row.child(SharedString::from(before.to_string()))
+                    .child(div().w(px(1.5)).h(px(theme.line_height)).bg(theme.text))
+                    .child(SharedString::from(after.to_string()))
+            } else {
+                row.child(SharedString::from(text.clone()))
+            });
+        }
+
+        div()
+            .id("composer")
+            .track_focus(&self.composer_focus)
+            .key_context("Composer")
+            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                let k = &ev.keystroke;
+                let action = key_action(
+                    &k.key,
+                    k.key_char.as_deref(),
+                    k.modifiers.platform,
+                    k.modifiers.control,
+                );
+                this.composer_key(&action, cx);
+            }))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .w_full()
+            .p_2()
+            .border_t_1()
+            .border_color(theme.border)
+            .bg(theme.header_bg)
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(format!(
+                        "comment on {}",
+                        scope_label(&composing.scope)
+                    ))),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_h(px(theme.line_height * 3.))
+                    .children(lines),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.text_muted)
+                    .child("cmd-enter save · esc cancel"),
+            )
+    }
+
+    /// The drafts written so far on the active review.
+    fn render_drafts(&self) -> Vec<gpui::AnyElement> {
+        let theme = &self.theme;
+        let Some(number) = self.active_number() else {
+            return Vec::new();
+        };
+        self.drafts
+            .for_review(number)
+            .iter()
+            .map(|c| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.added)
+                            .child(SharedString::from(scope_label(&c.scope))),
+                    )
+                    .child(
+                        div()
+                            .text_color(theme.text)
+                            .child(SharedString::from(c.body.clone())),
+                    )
+                    .into_any_element()
+            })
+            .collect()
+    }
+
     /// The storage key for one review.
     fn session_key(&self, number: u32) -> SessionKey {
         SessionKey {
@@ -305,13 +585,19 @@ impl Workspace {
     /// be the larger harm.
     fn persist(&mut self, number: u32) {
         let session = Session {
+            // The head the *diff* was fetched at, not the one from the last
+            // listing: a listing can move under us, and writing that head
+            // would claim the drafts were authored against code never seen.
             head_sha: self
                 .reviews
                 .iter()
                 .find(|r| r.id.number == number)
-                .map(|r| r.head_sha.clone())
+                .and_then(|r| match &r.state {
+                    LoadState::Ready { head_sha, .. } => Some(head_sha.clone()),
+                    _ => None,
+                })
                 .unwrap_or_default(),
-            comments: Vec::new(),
+            comments: self.drafts.for_review(number).to_vec(),
             reviewed: self.reviewed.marks(number),
         };
         if let Err(e) = self.store.save(&self.session_key(number), &session) {
@@ -390,6 +676,33 @@ impl Workspace {
     }
 }
 
+
+/// A one-line description of what a comment is attached to.
+///
+/// Shown in the composer header and beside each draft: a list of comment
+/// bodies with no anchors is unreadable once there is more than one.
+fn scope_label(scope: &CommentScope) -> String {
+    match scope {
+        CommentScope::Review => "whole review".to_string(),
+        CommentScope::File { path } => path.clone(),
+        CommentScope::Line { path, line, side } => format!("{path}:{line}{}", side_mark(side)),
+        CommentScope::Range {
+            path,
+            start_line,
+            end_line,
+            side,
+        } => format!("{path}:{start_line}-{end_line}{}", side_mark(side)),
+    }
+}
+
+/// Marks an anchor on the pre-image, where the line no longer exists on the new
+/// side. Blank for the common case so it does not add noise.
+fn side_mark(side: &Side) -> &'static str {
+    match side {
+        Side::Old => " (old)",
+        Side::New => "",
+    }
+}
 
 /// What the diff pane shows when no diff is resident for the active review.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -504,7 +817,10 @@ impl Render for Workspace {
         }
 
         div()
-            .key_context("Diff")
+            // Dropped while composing, so `j` types a j instead of moving the
+            // cursor. Key contexts match along the whole focus chain, so one
+            // left on an ancestor would still fire the diff bindings.
+            .when(self.composing.is_none(), |this| this.key_context("Diff"))
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &NextLine, _, cx| {
                 this.move_cursor(|_, ix| ix + 1, cx)
@@ -525,6 +841,21 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &Refresh, _, cx| this.refresh(None, cx)))
             .on_action(cx.listener(|this, _: &HalfPageDown, _, cx| this.half_page(true, cx)))
             .on_action(cx.listener(|this, _: &HalfPageUp, _, cx| this.half_page(false, cx)))
+            .on_action(cx.listener(|this, _: &LineComment, window, cx| {
+                this.comment_on_line(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FileComment, window, cx| {
+                this.comment_on_file(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ReviewComment, window, cx| {
+                this.compose(CommentScope::Review, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleVisual, _, cx| this.toggle_visual(cx)))
+            .on_action(cx.listener(|this, _: &DeleteDraft, _, cx| this.delete_draft(cx)))
+            .on_action(cx.listener(|this, _: &ClearSelection, _, cx| {
+                this.visual_anchor = None;
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &NextReview, _, cx| this.step_review(1, cx)))
             .on_action(cx.listener(|this, _: &PrevReview, _, cx| this.step_review(-1, cx)))
             .flex()
@@ -575,8 +906,41 @@ impl Render for Workspace {
                     .border_color(theme.border)
                     .children(file_rows)
             }))
+            .children({
+                let drafts = self.render_drafts();
+                (!drafts.is_empty()).then(|| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .w(px(320.))
+                        .h_full()
+                        .p_2()
+                        .border_l_1()
+                        .border_color(theme.border)
+                        .child(
+                            div()
+                                .px_2()
+                                .text_sm()
+                                .text_color(theme.text_muted)
+                                .child("drafts"),
+                        )
+                        .children(drafts)
+                })
+            })
             .child(match self.diff() {
-                Some(diff) => div().flex_1().h_full().child(diff).into_any_element(),
+                Some(diff) => div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .h_full()
+                    .child(div().flex_1().min_h(px(0.)).child(diff))
+                    .children(
+                        self.composing
+                            .as_ref()
+                            .map(|c| self.render_composer(c, cx).into_any_element()),
+                    )
+                    .into_any_element(),
                 None => {
                     let active = self.active.and_then(|ix| self.reviews.get(ix));
                     let (text, colour) = match placeholder(active) {

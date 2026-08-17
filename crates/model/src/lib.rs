@@ -37,6 +37,12 @@ pub enum LoadState {
         /// the resident set while the rail badge and cross-stack navigation
         /// still need to know what the PR contains.
         files: Vec<(String, u64)>,
+        /// The commit this diff was fetched at.
+        ///
+        /// Drafts are persisted against it, so it must be the head the comment
+        /// was actually written on — not the head from the last PR listing,
+        /// which can have moved since.
+        head_sha: String,
     },
     Failed {
         message: String,
