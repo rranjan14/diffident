@@ -41,6 +41,7 @@ actions!(
         StartSearch,
         NextMatch,
         PrevMatch,
+        OpenPalette,
     ]
 );
 
@@ -123,6 +124,10 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("/", StartSearch, Some("Diff")),
         KeyBinding::new("n", NextMatch, Some("Diff")),
         KeyBinding::new("shift-n", PrevMatch, Some("Diff")),
+        // §8 names Cmd-P. Unscoped, like ⌘B: a reviewer who has forgotten a key
+        // is exactly the reviewer who cannot get back to the Diff context to
+        // ask for the list of them.
+        KeyBinding::new("cmd-p", OpenPalette, None),
     ]
 }
 
@@ -349,7 +354,7 @@ mod tests {
         let before = pairs.len();
         pairs.dedup();
         assert_eq!(before, pairs.len(), "a key is bound twice in one context");
-        assert_eq!(before, 38, "every action in the actions! set needs a binding");
+        assert_eq!(before, 39, "every action in the actions! set needs a binding");
     }
 
     #[test]
