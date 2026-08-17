@@ -59,6 +59,30 @@ impl<R: GhRunner> Forge for GitHub<R> {
         let args = ["api", &endpoint, "--method", "POST", "--input", "-"];
         self.runner.run(&args, Some(payload)).map(|_| ())
     }
+
+    // The three thread operations delegate to `threads`, which owns the GraphQL
+    // documents and their parsers. That split is the same one `pr_diff` makes:
+    // this impl knows which call to make, the module below knows what the wire
+    // looks like, and the tests for each live where the knowledge does.
+    fn review_threads(
+        &self,
+        repo: &Repo,
+        number: u32,
+    ) -> Result<Vec<crate::threads::ReviewThread>, GhError> {
+        crate::threads::review_threads(&self.runner, repo, number)
+    }
+
+    fn set_resolved(&self, thread_id: &str, resolved: bool) -> Result<(), GhError> {
+        crate::threads::set_resolved(&self.runner, thread_id, resolved)
+    }
+
+    fn reply(
+        &self,
+        thread_id: &str,
+        body: &str,
+    ) -> Result<crate::threads::ThreadComment, GhError> {
+        crate::threads::reply(&self.runner, thread_id, body)
+    }
 }
 
 #[cfg(test)]

@@ -278,10 +278,7 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let loaded = cx
                 .background_executor()
-                .spawn(async move {
-                    let forge = GitHub::new(Gh);
-                    load_review(&forge, forge.runner(), &repo, number)
-                })
+                .spawn(async move { load_review(&GitHub::new(Gh), &repo, number) })
                 .await;
             this.update(cx, |this, cx| {
                 match loaded {
@@ -710,7 +707,7 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { diffident_forge::threads::reply(&Gh, &thread_id, &body) })
+                .spawn(async move { GitHub::new(Gh).reply(&thread_id, &body) })
                 .await;
             this.update(cx, |this, cx| {
                 match result {
@@ -1206,7 +1203,7 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { diffident_forge::threads::set_resolved(&Gh, &id, want) })
+                .spawn(async move { GitHub::new(Gh).set_resolved(&id, want) })
                 .await;
             this.update(cx, |this, cx| {
                 match result {
