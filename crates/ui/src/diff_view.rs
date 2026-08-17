@@ -36,6 +36,13 @@ pub struct DiffView {
     /// Node id of the thread the reviewer has selected, so the inline copy can
     /// show the same selection the right-hand pane does.
     selected_thread: Option<String>,
+    /// Soft wrap. On by default: a clipped line hides code the reviewer is
+    /// being asked to approve. `w` turns it off for when column alignment
+    /// matters more, e.g. an aligned struct literal or a table in a comment.
+    wrap: bool,
+    /// Viewport width last seen while wrap was on. Compared in `render` so a
+    /// resize re-measures every row.
+    last_width: f32,
 }
 
 impl DiffView {
@@ -65,7 +72,24 @@ impl DiffView {
             cursor: 0,
             inline: Vec::new(),
             selected_thread: None,
+            wrap: true,
+            last_width: 0.,
         }
+    }
+
+    pub fn wrap(&self) -> bool {
+        self.wrap
+    }
+
+    /// Toggling wrap changes every row's height, so every row must be
+    /// re-measured — otherwise the list draws them at their old heights.
+    pub fn set_wrap(&mut self, wrap: bool) {
+        self.wrap = wrap;
+        self.list.remeasure_items(0..self.data.rows.len());
+    }
+
+    pub fn toggle_wrap(&mut self) {
+        self.set_wrap(!self.wrap);
     }
 
     /// The visible area of the list, as laid out on the last frame.
@@ -143,13 +167,37 @@ impl DiffView {
         self.list.scroll_to_reveal_item(self.cursor);
     }
 
-    /// How many rows `ctrl-d` moves: half a screenful.
+    /// How many rows `ctrl-d` moves: as many as fill half the viewport.
     ///
-    /// Falls back to 1 before the first layout, when the viewport is still
-    /// zero-sized — moving one row is a sane thing to do on a keypress that
-    /// arrives that early, and it keeps the caller free of an `Option`.
+    /// Measured, not computed — rows have not been a uniform height since
+    /// threads went inline, and wrapping made the gap worse. `bounds_for_item`
+    /// returns `None` for anything before the current scroll top or not yet
+    /// rendered, so this walks forward only and naturally stops at the last
+    /// drawn row.
+    ///
+    /// Half-page *up* reuses the same count rather than walking backwards,
+    /// which `bounds_for_item` cannot do. That makes `ctrl-u` approximate on a
+    /// diff with wildly varying row heights — acceptable, and the same
+    /// approximation the fixed-height version always made.
     pub fn rows_per_half_page(&self) -> usize {
-        ((self.viewport().size.height / px(self.theme.line_height)) as usize / 2).max(1)
+        let half = self.viewport().size.height / 2.;
+        if half <= px(0.) {
+            return 1;
+        }
+        let top = self.list.logical_scroll_top().item_ix;
+        let mut used = px(0.);
+        let mut rows = 0usize;
+        for ix in top..self.data.rows.len() {
+            let Some(b) = self.list.bounds_for_item(ix) else {
+                break;
+            };
+            used += b.size.height;
+            rows += 1;
+            if used >= half {
+                break;
+            }
+        }
+        rows.max(1)
     }
 
     fn render_row(&self, ix: usize, theme: &Theme) -> impl IntoElement + use<> {
@@ -199,25 +247,36 @@ impl DiffView {
                         )
                     })
                     .collect();
+                let num = |n: Option<u32>| {
+                    div()
+                        .w(px(38.))
+                        .text_color(theme.text_tertiary)
+                        .child(SharedString::from(
+                            n.map(|n| n.to_string()).unwrap_or_default(),
+                        ))
+                };
+                let gutter = div()
+                    .flex()
+                    .flex_none()
+                    .child(num(line.old_lineno))
+                    .child(num(line.new_lineno))
+                    .child(div().w(px(14.)).child(sigil));
                 let code = div()
                     .flex()
-                    .h(px(theme.line_height))
+                    .items_start()
                     .when(ix == self.cursor, |this| this.bg(theme.accent_soft))
                     .when(ix != self.cursor, |this| this.bg(bg))
+                    .child(gutter)
                     .child(
                         div()
-                            .w(px(48.))
-                            .text_color(theme.text_secondary)
-                            .child(SharedString::from(
-                                line.new_lineno
-                                    .or(line.old_lineno)
-                                    .map(|n| n.to_string())
-                                    .unwrap_or_default(),
-                            )),
-                    )
-                    .child(div().w(px(12.)).child(sigil))
-                    .child(
-                        StyledText::new(line.text.clone()).with_default_highlights(&style, ranges),
+                            .flex_1()
+                            .min_w(px(0.))
+                            .when(self.wrap, |d| d.whitespace_normal())
+                            .when(!self.wrap, |d| d.truncate())
+                            .child(
+                                StyledText::new(line.text.clone())
+                                    .with_default_highlights(&style, ranges),
+                            ),
                     );
 
                 let threads = self.threads_at(ix);
@@ -264,9 +323,9 @@ impl DiffView {
             .flex()
             .flex_col()
             .gap_1()
-            // Clears the 48px line-number gutter and the 12px sigil column, so
+            // Clears the 38+38 lineno columns and the 14px sigil, so
             // the thread starts where the code does.
-            .ml(px(60.))
+            .ml(px(90.))
             .my_1()
             .px_2()
             .py_1()
@@ -294,6 +353,14 @@ impl DiffView {
 
 impl Render for DiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Any width change re-wraps every line, so every measured height is
+        // stale. Nothing needed this before wrap existed.
+        let w: f32 = self.viewport().size.width.into();
+        if self.wrap && (w - self.last_width).abs() > 0.5 {
+            self.last_width = w;
+            self.list.remeasure_items(0..self.data.rows.len());
+        }
+
         let bar = scrollbar(
             self.viewport(),
             self.content_height(),
@@ -394,6 +461,53 @@ mod tests {
     /// own source file. `Workspace` follows once it has somewhere to inject a
     /// forge — until then it would shell out to real `gh` on the first
     /// `run_until_parked`.
+    #[test]
+    fn wrap_is_on_by_default_and_set_wrap_flips_it() {
+        let mut view = DiffView::new(data(), Theme::dark());
+        assert!(view.wrap(), "clipped lines hide the code under review");
+        assert_eq!(view.last_width, 0.0);
+        view.set_wrap(false);
+        assert!(!view.wrap());
+        view.set_wrap(true);
+        assert!(view.wrap());
+    }
+
+    #[test]
+    fn a_line_row_uses_the_wrap_incantation_and_a_two_column_gutter() {
+        let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/diff_view.rs"));
+        let flex = concat!("flex", "_1()");
+        let min = concat!("min_w(px(", "0.))");
+        let wrap_on = concat!("whitespace_", "normal()");
+        let wrap_off = concat!(".trun", "cate()");
+        let old_col = concat!("px(38", ".)");
+        let sigil = concat!("px(14", ".)");
+        let single = concat!(".or(line.", "old_lineno)");
+        assert!(src.contains(flex), "the code child must take leftover width");
+        assert!(src.contains(min), "flex will not wrap unless it can shrink");
+        assert!(src.contains(wrap_on), "wrap on → whitespace_normal");
+        assert!(src.contains(wrap_off), "wrap off → truncate");
+        assert!(src.contains(old_col), "each lineno column is 38px");
+        assert!(src.contains(sigil), "the sigil column is 14px");
+        assert!(
+            !src.contains(single),
+            "the gutter must not collapse to one number"
+        );
+    }
+
+    #[test]
+    fn half_page_walks_measured_row_bounds_and_remeasures_on_width() {
+        let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/diff_view.rs"));
+        let walk = concat!("bounds_for_", "item");
+        let computed = concat!("line_height)) as usize / ", "2)");
+        let last = concat!("last_", "width");
+        assert!(src.contains(walk), "ctrl-d must ask the list, not divide");
+        assert!(
+            !src.contains(computed),
+            "the old viewport÷line_height half-page must be gone"
+        );
+        assert!(src.contains(last), "wrap + resize invalidates row heights");
+    }
+
     #[gpui::test]
     fn a_view_can_be_created_as_an_entity_in_a_test_app(cx: &mut gpui::TestAppContext) {
         let d = data();

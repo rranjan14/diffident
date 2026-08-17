@@ -1659,6 +1659,15 @@ impl Render for Workspace {
                 this.sidebar_collapsed = !this.sidebar_collapsed;
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &ToggleWrap, _, cx| {
+                let Some(diff) = this.diff() else {
+                    return;
+                };
+                diff.update(cx, |view, cx| {
+                    view.toggle_wrap();
+                    cx.notify();
+                });
+            }))
             .flex()
             .size_full()
             .bg(theme.surface)
@@ -1926,6 +1935,25 @@ mod tests {
         assert!(workspace.read_with(cx, |this, _| this.sidebar_collapsed));
         cx.simulate_keystrokes("cmd-b");
         assert!(!workspace.read_with(cx, |this, _| this.sidebar_collapsed));
+    }
+
+    #[gpui::test]
+    fn w_toggles_soft_wrap(cx: &mut gpui::TestAppContext) {
+        let (workspace, cx) = workspace_with_diff(cx, GitHub::new(FakeGh::new()), Vec::new());
+        assert!(
+            workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).wrap()),
+            "wrap is on by default"
+        );
+        cx.simulate_keystrokes("w");
+        assert!(
+            !workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).wrap()),
+            "`w` turns wrap off"
+        );
+        cx.simulate_keystrokes("w");
+        assert!(
+            workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).wrap()),
+            "`w` turns wrap back on"
+        );
     }
 
     /// An unresolved thread anchored to `line` on the new side.
