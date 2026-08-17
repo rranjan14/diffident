@@ -1,4 +1,4 @@
-use crate::scrollbar::scrollbar;
+use crate::density;
 use crate::loader::ReviewData;
 use crate::theme::Theme;
 use std::sync::Arc;
@@ -6,7 +6,7 @@ use diffident_diff::{DiffFile, LineKind, Row};
 use diffident_forge::threads::ReviewThread;
 use gpui::{
     Bounds, Context, HighlightStyle, IntoElement, ListAlignment, ListState, ParentElement, Pixels,
-    Render, SharedString, StyledText, Window, div, list, prelude::*, px, rgb,
+    Render, SharedString, StyledText, Window, div, list, point, prelude::*, px, rgb,
 };
 use std::ops::Range;
 
@@ -25,9 +25,6 @@ pub struct DiffView {
     /// The list's own state. Owns scroll position and per-row measurements.
     list: ListState,
     theme: Theme,
-    /// Where inside the scrollbar thumb the pointer grabbed. Owned solely by
-    /// the scrollbar element.
-    drag_offset: Option<Pixels>,
     /// Row the keyboard cursor is on.
     pub cursor: usize,
     /// Threads to draw under each row, in row order (§7). Owned, because the
@@ -68,7 +65,6 @@ impl DiffView {
             list: ListState::new(rows_len, ListAlignment::Top, px(line_height * 20.))
                 .with_uniform_item_height(px(line_height)),
             theme,
-            drag_offset: None,
             cursor: 0,
             inline: Vec::new(),
             selected_thread: None,
@@ -198,6 +194,33 @@ impl DiffView {
             }
         }
         rows.max(1)
+    }
+
+    /// Jump the list so `y` (window pixels) is the new scroll fraction.
+    fn jump_to_y(&mut self, y: f32) {
+        let bounds = self.viewport();
+        let top: f32 = bounds.origin.y.into();
+        let h: f32 = bounds.size.height.into();
+        if h <= 0. {
+            return;
+        }
+        let frac = ((y - top) / h).clamp(0., 1.);
+        let max = self.list.max_offset_for_scrollbar().y;
+        self.list
+            .set_offset_from_scrollbar(point(px(0.), -(max * frac)));
+    }
+
+    fn viewport_frac(&self) -> (f32, f32) {
+        let content: f32 = self.content_height().into();
+        let view_h: f32 = self.viewport().size.height.into();
+        if content <= 0. {
+            return (0., 1.);
+        }
+        let scroll: f32 = (-self.list.scroll_px_offset_for_scrollbar().y).into();
+        (
+            (scroll / content).clamp(0., 1.),
+            (view_h / content).clamp(0., 1.),
+        )
     }
 
     fn render_row(&self, ix: usize, theme: &Theme) -> impl IntoElement + use<> {
@@ -361,13 +384,14 @@ impl Render for DiffView {
             self.list.remeasure_items(0..self.data.rows.len());
         }
 
-        let bar = scrollbar(
-            self.viewport(),
-            self.content_height(),
-            self.list.clone(),
+        let thread_rows: Vec<usize> = self.inline.iter().map(|(ix, _)| *ix).collect();
+        let bar = density::track(
+            self.data.clone(),
+            thread_rows,
+            self.viewport_frac(),
             &self.theme,
             cx.entity(),
-            |v: &mut Self| &mut v.drag_offset,
+            Self::jump_to_y,
         );
 
         div()
@@ -446,7 +470,7 @@ mod tests {
         let theme = Theme::dark();
         let content = px(rows.len() as f32 * theme.line_height);
         assert!(
-            crate::scrollbar::thumb(px(40.), content, px(0.)).is_some(),
+            crate::density::thumb(px(40.), content, px(0.)).is_some(),
             "a viewport shorter than the content must produce a thumb"
         );
     }
