@@ -96,11 +96,31 @@ pub struct Workspace {
     error: Option<String>,
 }
 
+/// Where the composer's text goes when it is saved.
+///
+/// `Clone` so `commit_composer` can lift the destination out of `self.mode`
+/// before it needs `&mut self` — see the comment there.
+#[derive(Clone)]
+enum Destination {
+    /// A local draft on this anchor, batched into the next submit (§7).
+    Draft(CommentScope),
+    /// A reply to a thread already on the PR. Posted the moment it is saved
+    /// rather than batched: §7 gives replies their own mutation, and
+    /// `create_review` has no field that would carry one.
+    Reply {
+        thread_id: String,
+        /// `path:line`, for the composer's header. Carried rather than looked
+        /// up so rendering needs no access to the thread list.
+        on: String,
+    },
+}
+
 /// A comment being written.
 struct Composing {
-    /// What it will attach to, decided when the composer opened rather than
-    /// when it closes — the cursor is free to move underneath.
-    scope: CommentScope,
+    /// Where it will go, decided when the composer opened rather than when it
+    /// closes — the cursor and the thread selection are free to move
+    /// underneath.
+    dest: Destination,
     buffer: TextBuffer,
 }
 
@@ -370,6 +390,21 @@ impl Workspace {
     /// Re-opening the same anchor edits that draft rather than stacking a
     /// second one on the same line, which is almost never what is meant.
     fn compose(&mut self, scope: CommentScope, window: &mut Window, cx: &mut Context<Self>) {
+        self.compose_with(scope, None, window, cx);
+    }
+
+    /// `compose`, with `extra` appended to whatever was already there.
+    ///
+    /// Appending rather than replacing: Task 7 seeds a suggestion fence, and
+    /// silently discarding a paragraph the reviewer had already typed on that
+    /// line is not a recoverable mistake.
+    fn compose_with(
+        &mut self,
+        scope: CommentScope,
+        extra: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let existing = self
             .active_number()
             .map(|n| self.drafts.for_review(n))
@@ -377,13 +412,48 @@ impl Workspace {
             .iter()
             .find(|c| c.scope == scope && c.is_editable())
             .map(|c| c.body.clone());
+        let seed = match (existing, extra) {
+            (Some(body), Some(extra)) => format!("{body}\n{extra}"),
+            (Some(body), None) => body,
+            (None, Some(extra)) => extra,
+            (None, None) => String::new(),
+        };
         self.visual_anchor = None;
         self.enter_mode(
             Mode::Composing(Composing {
-                buffer: existing
-                    .map(|b| TextBuffer::from_text(&b))
-                    .unwrap_or_default(),
-                scope,
+                buffer: TextBuffer::from_text(&seed),
+                dest: Destination::Draft(scope),
+            }),
+            window,
+            cx,
+        );
+    }
+
+    /// `a` — answer the selected thread.
+    fn reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(number) = self.active_number() else {
+            return;
+        };
+        let Some((thread_id, on)) = self
+            .threads
+            .get(&number)
+            .and_then(|ts| crate::threads::selected(ts, self.thread_cursor))
+            .map(|t| {
+                (
+                    t.id.clone(),
+                    format!("{}:{}", t.path, t.anchor_line().unwrap_or(0)),
+                )
+            })
+        else {
+            return;
+        };
+        self.visual_anchor = None;
+        self.enter_mode(
+            Mode::Composing(Composing {
+                // Never seeded from a draft: a reply is not a draft, and there
+                // is nothing on disk that belongs to it.
+                buffer: TextBuffer::default(),
+                dest: Destination::Reply { thread_id, on },
             }),
             window,
             cx,
@@ -501,8 +571,7 @@ impl Workspace {
             }
             Key::Save => {
                 if matches!(self.mode, Mode::Composing(_)) {
-                    self.save_draft();
-                    self.leave_mode(window, cx);
+                    self.commit_composer(window, cx);
                 }
                 return;
             }
@@ -528,24 +597,39 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Turn the composer's contents into a draft and close it.
+    /// Finish composing: save a draft, or post a reply, then close.
     ///
-    /// A blank comment closes without saving rather than storing an empty
-    /// draft the reviewer would then have to delete.
-    fn save_draft(&mut self) {
-        let Mode::Composing(composing) = &self.mode else {
-            return;
+    /// A blank body closes without doing either, rather than storing an empty
+    /// draft the reviewer would then have to delete or posting an empty reply
+    /// that GitHub would reject.
+    ///
+    /// The destination and body are lifted out of `self.mode` into owned values
+    /// first. Every branch below needs `&mut self`, and holding a borrow of
+    /// `self.mode` across `save_draft`/`post_reply`/`leave_mode` does not
+    /// compile.
+    fn commit_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pending = match &self.mode {
+            Mode::Composing(c) if !c.buffer.is_blank() => Some((c.dest.clone(), c.buffer.text())),
+            Mode::Composing(_) => None,
+            _ => return,
         };
+        match pending {
+            Some((Destination::Draft(scope), body)) => self.save_draft(scope, body),
+            Some((Destination::Reply { thread_id, .. }, body)) => {
+                self.post_reply(thread_id, body, cx)
+            }
+            None => {}
+        }
+        self.leave_mode(window, cx);
+    }
+
+    /// Store a local draft on `scope`, replacing any already there.
+    fn save_draft(&mut self, scope: CommentScope, body: String) {
         let Some(number) = self.active_number() else {
             return;
         };
-        if composing.buffer.is_blank() {
-            return;
-        }
-        let body = composing.buffer.text();
-        let scope = composing.scope.clone();
-        // Replace any draft already on this exact anchor — `compose` seeded the
-        // buffer from it, so keeping both would duplicate the text.
+        // Replace any draft already on this exact anchor — `compose_with`
+        // seeded the buffer from it, so keeping both would duplicate the text.
         if let Some(old) = self
             .drafts
             .for_review(number)
@@ -572,6 +656,45 @@ impl Workspace {
         };
         self.drafts.add(number, comment);
         self.persist(number);
+    }
+
+    /// Post a reply and, only if GitHub took it, show it in the pane.
+    ///
+    /// The comment comes back from the mutation itself, so the reply renders
+    /// with the author and id GitHub assigned rather than a local guess, and
+    /// costs no second fetch.
+    fn post_reply(&mut self, thread_id: String, body: String, cx: &mut Context<Self>) {
+        let Some(number) = self.active_number() else {
+            return;
+        };
+        let target = thread_id.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { diffident_forge::threads::reply(&Gh, &thread_id, &body) })
+                .await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(comment) => {
+                        if let Some(t) = this
+                            .threads
+                            .get_mut(&number)
+                            .and_then(|ts| ts.iter_mut().find(|t| t.id == target))
+                        {
+                            t.comments.push(comment);
+                        }
+                        this.error = None;
+                    }
+                    // The text is gone from the composer and was never a draft.
+                    // Saying so is the only thing standing between the reviewer
+                    // and a reply they believe they sent.
+                    Err(e) => this.error = Some(format!("reply failed: {e}")),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The composer panel: what it attaches to, the text, and how to finish.
@@ -622,10 +745,10 @@ impl Workspace {
                 div()
                     .text_sm()
                     .text_color(theme.text_muted)
-                    .child(SharedString::from(format!(
-                        "comment on {}",
-                        scope_label(&composing.scope)
-                    ))),
+                    .child(SharedString::from(match &composing.dest {
+                        Destination::Draft(scope) => format!("comment on {}", scope_label(scope)),
+                        Destination::Reply { on, .. } => format!("reply to {on}"),
+                    })),
             )
             .child(
                 div()
@@ -638,7 +761,13 @@ impl Workspace {
                 div()
                     .text_sm()
                     .text_color(theme.text_muted)
-                    .child("cmd-enter save · esc cancel"),
+                    .child(SharedString::from(match &composing.dest {
+                        Destination::Draft(_) => "cmd-enter save · esc cancel",
+                        // Not "save": this one leaves the machine the moment it
+                        // is pressed, and the reviewer should know that before
+                        // pressing it, not after.
+                        Destination::Reply { .. } => "cmd-enter post to GitHub · esc cancel",
+                    })),
             )
     }
 
@@ -1422,6 +1551,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &NextThread, _, cx| this.step_thread(1, cx)))
             .on_action(cx.listener(|this, _: &PrevThread, _, cx| this.step_thread(-1, cx)))
             .on_action(cx.listener(|this, _: &ToggleResolved, _, cx| this.toggle_resolved(cx)))
+            .on_action(cx.listener(|this, _: &ReplyToThread, window, cx| this.reply(window, cx)))
             .on_action(cx.listener(|this, _: &NextReview, _, cx| this.step_review(1, cx)))
             .on_action(cx.listener(|this, _: &PrevReview, _, cx| this.step_review(-1, cx)))
             .on_action(cx.listener(|this, _: &Submit, window, cx| this.begin_submit(window, cx)))
