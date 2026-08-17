@@ -41,17 +41,26 @@ enum Mode {
     Resolving(Submission),
     /// Choosing the review kind, and sending.
     Confirming(Submission),
+    /// Typing a search. Matches update on every keystroke, so the reviewer
+    /// sees what they are about to jump to before committing to it.
+    Searching(TextBuffer),
 }
 
 impl Mode {
-    /// The key context this mode listens in. `None` while a mode owns the
-    /// keyboard for raw text, so no action bindings fire underneath it.
+    /// The key context this mode listens in.
+    ///
+    /// `None` means this mode owns the keyboard for raw text, so no action
+    /// bindings fire underneath it — and, by the same token, that its own
+    /// element must hold the focus. `enter_mode` reads exactly that.
     fn key_context(&self) -> Option<&'static str> {
         match self {
             Mode::Browsing => Some("Diff"),
             Mode::Composing(_) => None,
             Mode::Resolving(_) => Some("Resolver"),
             Mode::Confirming(_) => Some("Confirm"),
+            // Like the composer: no context, so every letter reaches the input
+            // instead of firing the diff binding that shares it.
+            Mode::Searching(_) => None,
         }
     }
 }
@@ -117,6 +126,9 @@ pub struct Workspace {
     /// for the review on screen; it is not written back, because a keystroke
     /// meant for one file should not silently edit a file on disk.
     wrap_default: bool,
+    /// The current search hits. Kept here rather than only in the view because
+    /// `n`/`N` work from Browsing, after the input has closed.
+    matches: Vec<crate::search::Match>,
     /// `⌘B`. Collapsed, the diff owns the whole window.
     sidebar_collapsed: bool,
     focus: FocusHandle,
@@ -183,6 +195,7 @@ impl Workspace {
             theme,
             sidebar_width: config.sidebar_width,
             wrap_default: config.wrap,
+            matches: Vec::new(),
             sidebar_collapsed: false,
             focus: cx.focus_handle(),
             error: config_error,
@@ -564,7 +577,13 @@ impl Workspace {
     /// fully green test suite. Keeping the focus move welded to the mode
     /// change is what stops that recurring.
     fn enter_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
-        let takes_keyboard = matches!(mode, Mode::Composing(_));
+        // Every mode that owns raw text needs the focus, not just the
+        // composer. Searching was added and did not, so its input rendered
+        // with focus still on the root — the field was visible and every
+        // keystroke went nowhere. A `matches!` that lists modes by name is
+        // exactly the thing that rots when a mode is added, so it asks the
+        // mode instead.
+        let takes_keyboard = mode.key_context().is_none();
         self.mode = mode;
         if takes_keyboard {
             self.composer_focus.focus(window, cx);
@@ -827,6 +846,52 @@ impl Workspace {
             .ok();
         })
         .detach();
+    }
+
+    /// The search input: one line, pinned under the diff.
+    fn render_search(&self, buffer: &TextBuffer, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.theme.clone();
+        let hits = self.matches.len();
+        div()
+            .id("search")
+            .track_focus(&self.composer_focus)
+            .key_context("Search")
+            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
+                let k = &ev.keystroke;
+                let action = key_action(
+                    &k.key,
+                    k.key_char.as_deref(),
+                    k.modifiers.platform,
+                    k.modifiers.control,
+                );
+                this.search_key(&action, window, cx);
+            }))
+            .flex()
+            .items_center()
+            .gap(px(theme.s2))
+            .w_full()
+            .px(px(theme.s3))
+            .py(px(theme.s2))
+            .border_t_1()
+            .border_color(theme.border_subtle)
+            .bg(theme.surface_raised)
+            .child(div().text_color(theme.text_tertiary).child("/"))
+            .child(
+                div()
+                    .flex_1()
+                    .text_color(theme.text_primary)
+                    .child(SharedString::from(buffer.text())),
+            )
+            .child(
+                div()
+                    .text_size(px(theme.ui_sm))
+                    .text_color(theme.text_tertiary)
+                    .child(SharedString::from(match hits {
+                        0 => "no matches".to_string(),
+                        1 => "1 match".to_string(),
+                        n => format!("{n} matches"),
+                    })),
+            )
     }
 
     /// The composer panel: what it attaches to, the text, and how to finish.
@@ -1193,6 +1258,81 @@ impl Workspace {
         if let Some(number) = self.active_number() {
             self.sync_threads_for(number, cx);
         }
+    }
+
+    /// `/` — open the search input.
+    fn start_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.enter_mode(Mode::Searching(TextBuffer::default()), window, cx);
+    }
+
+    /// A keystroke while the search input has focus.
+    ///
+    /// Matches are recomputed on every keystroke rather than on `enter`, so the
+    /// reviewer can see what they are about to jump to. `escape` clears them
+    /// again — a cancelled search should not leave the diff lit up.
+    fn search_key(&mut self, key: &Key, window: &mut Window, cx: &mut Context<Self>) {
+        match key {
+            Key::Cancel => {
+                self.apply_matches(Vec::new(), cx);
+                self.leave_mode(window, cx);
+                return;
+            }
+            Key::Save | Key::Newline => {
+                self.leave_mode(window, cx);
+                self.step_match(true, cx);
+                return;
+            }
+            Key::Ignore => return,
+            _ => {}
+        }
+        let Mode::Searching(buffer) = &mut self.mode else {
+            return;
+        };
+        match key {
+            Key::Insert(text) => buffer.insert(text),
+            Key::Backspace => buffer.backspace(),
+            Key::Delete => buffer.delete(),
+            Key::Left => buffer.left(),
+            Key::Right => buffer.right(),
+            Key::Home => buffer.home(),
+            Key::End => buffer.end(),
+            _ => return,
+        }
+        let needle = buffer.text();
+        let found = match self.data() {
+            Some(data) => crate::search::find(&data.files, &data.rows, &needle),
+            None => Vec::new(),
+        };
+        self.apply_matches(found, cx);
+    }
+
+    /// Store the hits and push them to the view.
+    fn apply_matches(&mut self, found: Vec<crate::search::Match>, cx: &mut Context<Self>) {
+        self.matches = found.clone();
+        if let Some(diff) = self.diff() {
+            diff.update(cx, |view, cx| {
+                view.set_matches(found);
+                cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
+    /// `n` / `N` — jump to the next or previous hit.
+    fn step_match(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let Some(diff) = self.diff() else { return };
+        let here = diff.read(cx).cursor;
+        let Some(ix) = crate::search::step(&self.matches, here, forward) else {
+            if !self.matches.is_empty() {
+                return;
+            }
+            return self.refuse("no matches — press / to search", cx);
+        };
+        let row = self.matches[ix].row;
+        diff.update(cx, |view, cx| {
+            view.scroll_to(row);
+            cx.notify();
+        });
     }
 
     /// `t` / `T` — move between the conversations on this PR.
@@ -1673,6 +1813,11 @@ impl Render for Workspace {
                 this.sidebar_collapsed = !this.sidebar_collapsed;
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &StartSearch, window, cx| {
+                this.start_search(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &NextMatch, _, cx| this.step_match(true, cx)))
+            .on_action(cx.listener(|this, _: &PrevMatch, _, cx| this.step_match(false, cx)))
             .on_action(cx.listener(|this, _: &ToggleWrap, _, cx| {
                 let Some(diff) = this.diff() else {
                     return;
@@ -1794,6 +1939,7 @@ impl Render for Workspace {
                     }))
                     .children(match &self.mode {
                         Mode::Composing(c) => Some(self.render_composer(c, cx).into_any_element()),
+                        Mode::Searching(b) => Some(self.render_search(b, cx).into_any_element()),
                         Mode::Resolving(s) => Some(self.render_resolver(s).into_any_element()),
                         Mode::Confirming(s) => Some(self.render_confirm(s, cx).into_any_element()),
                         _ => None,
@@ -2214,6 +2360,71 @@ mod tests {
             watch.upgrade().is_none(),
             "the evicted review's diff is still alive — the residency bound is decorative"
         );
+    }
+
+    /// §8's `/`, `n`, `N`, driven through the real keymap.
+    ///
+    /// The seam worth testing is the mode switch: `/` opens an input that holds
+    /// *no* key context, so the `n` typed into it must reach the buffer rather
+    /// than firing NextMatch, and afterwards the same `n` must fire it. That is
+    /// the arrangement Phase 5b once got wrong badly enough to kill every key
+    /// in the app.
+    #[gpui::test]
+    fn slash_searches_and_n_steps_the_hits(cx: &mut gpui::TestAppContext) {
+        let (workspace, cx) =
+            workspace_with_diff(cx, GitHub::new(FakeGh::new()), Vec::new());
+
+        cx.simulate_keystrokes("/");
+        assert!(
+            workspace.read_with(cx, |this, _| matches!(this.mode, Mode::Searching(_))),
+            "`/` opens the input"
+        );
+
+        // "line" appears on the thirty context lines of the fixture. Typing it
+        // must land in the buffer — `n` is a diff binding, and if the input
+        // leaked it the search would read "lie".
+        cx.simulate_input("line");
+        let hits = workspace.read_with(cx, |this, _| this.matches.len());
+        assert!(hits > 1, "matches update as you type, found {hits}");
+        assert!(
+            workspace.read_with(cx, |this, _| matches!(&this.mode, Mode::Searching(b) if b.text() == "line")),
+            "every letter reached the buffer, including the `n`"
+        );
+
+        cx.simulate_keystrokes("enter");
+        assert!(
+            workspace.read_with(cx, |this, _| matches!(this.mode, Mode::Browsing)),
+            "enter closes the input"
+        );
+        let first = workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).cursor);
+
+        // Now the same key is a binding again.
+        cx.simulate_keystrokes("n");
+        let second = workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).cursor);
+        assert!(second > first, "`n` moved on: {first} -> {second}");
+
+        cx.simulate_keystrokes("shift-n");
+        assert_eq!(
+            workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).cursor),
+            first,
+            "`N` came back"
+        );
+    }
+
+    /// A cancelled search must not leave the diff lit up.
+    #[gpui::test]
+    fn escape_clears_the_matches_it_found(cx: &mut gpui::TestAppContext) {
+        let (workspace, cx) =
+            workspace_with_diff(cx, GitHub::new(FakeGh::new()), Vec::new());
+        cx.simulate_keystrokes("/");
+        cx.simulate_input("line");
+        assert!(workspace.read_with(cx, |this, _| !this.matches.is_empty()));
+        cx.simulate_keystrokes("escape");
+        assert!(
+            workspace.read_with(cx, |this, _| this.matches.is_empty()),
+            "escape cleared them"
+        );
+        assert!(workspace.read_with(cx, |this, _| matches!(this.mode, Mode::Browsing)));
     }
 
     /// §7: "a failed submit leaves everything at LocalDraft" — the same rule

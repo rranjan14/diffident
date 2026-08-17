@@ -33,6 +33,9 @@ pub struct DiffView {
     /// Node id of the thread the reviewer has selected, so the inline copy can
     /// show the same selection the right-hand pane does.
     selected_thread: Option<String>,
+    /// Search hits, in row order. Pushed in rather than computed here: matching
+    /// is pure and belongs in `search`, and the view only needs to paint.
+    matches: Vec<crate::search::Match>,
     /// Soft wrap. On by default: a clipped line hides code the reviewer is
     /// being asked to approve. `w` turns it off for when column alignment
     /// matters more, e.g. an aligned struct literal or a table in a comment.
@@ -68,6 +71,7 @@ impl DiffView {
             cursor: 0,
             inline: Vec::new(),
             selected_thread: None,
+            matches: Vec::new(),
             wrap: true,
             last_width: 0.,
         }
@@ -146,6 +150,15 @@ impl DiffView {
                 self.list.remeasure_items(row..row + 1);
             }
         }
+    }
+
+    /// Replace the search hits and re-measure nothing.
+    ///
+    /// Unlike `set_threads`, a match changes a row's colours but never its
+    /// height, so the measured layout stays valid and the list needs no
+    /// remeasure at all.
+    pub fn set_matches(&mut self, matches: Vec<crate::search::Match>) {
+        self.matches = matches;
     }
 
     /// The threads that render under row `ix`, if any.
@@ -258,18 +271,31 @@ impl DiffView {
                     LineKind::Context => (theme.surface, " "),
                 };
                 let style = theme.code_style();
-                let ranges: Vec<(Range<usize>, HighlightStyle)> = self.data.highlights[ix]
+                // Matches are laid *over* syntax rather than appended to it:
+                // `with_default_highlights` requires sorted, non-overlapping
+                // ranges (§3), and a hit inside a keyword overlaps it.
+                let hits: Vec<crate::search::Match> = self
+                    .matches
                     .iter()
-                    .map(|(r, c)| {
-                        (
-                            r.clone(),
-                            HighlightStyle {
-                                color: Some(rgb(*c).into()),
-                                ..Default::default()
-                            },
-                        )
-                    })
+                    .filter(|m| m.row == ix)
+                    .copied()
                     .collect();
+                let ranges: Vec<(Range<usize>, HighlightStyle)> =
+                    crate::search::overlay(&self.data.highlights[ix], &hits)
+                        .into_iter()
+                        .map(|s| {
+                            (
+                                s.range,
+                                HighlightStyle {
+                                    color: s.color.map(|c| rgb(c).into()),
+                                    background_color: s
+                                        .is_match
+                                        .then(|| theme.accent_soft.into()),
+                                    ..Default::default()
+                                },
+                            )
+                        })
+                        .collect();
                 let num = |n: Option<u32>| {
                     div()
                         .w(px(38.))

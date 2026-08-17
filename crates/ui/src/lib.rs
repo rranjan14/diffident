@@ -9,6 +9,7 @@ pub mod loader;
 pub mod navigate;
 pub mod rail;
 pub mod residency;
+pub mod search;
 pub mod sidebar;
 pub mod submit;
 pub mod theme;
