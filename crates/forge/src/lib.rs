@@ -96,6 +96,15 @@ pub trait Forge {
     /// avoid asking about — a diff already knows which of its files are binary.
     fn file_at(&self, repo: &Repo, path: &str, sha: &str) -> Result<String, gh::GhError>;
 
+    /// A file's contents at a commit as the JSON envelope, with `content`
+    /// base64-encoded.
+    ///
+    /// Separate from `file_at` because that one asks for raw bytes, and raw
+    /// bytes cannot travel through `GhRunner` — it returns a `String`, and
+    /// lossy UTF-8 would corrupt an image beyond recognition. Base64 is text
+    /// the whole way.
+    fn file_encoded_at(&self, repo: &Repo, path: &str, sha: &str) -> Result<String, gh::GhError>;
+
     /// Post a reply, returning the comment the host created so the caller can
     /// render it without a second fetch.
     fn reply(

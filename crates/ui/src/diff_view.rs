@@ -48,6 +48,9 @@ pub struct DiffView {
     /// viewport borrows the `ListState` and `render_row` runs while the list
     /// already holds that borrow.
     text_w: Pixels,
+    /// Fetched image bytes, keyed by file index. Pushed in like threads are:
+    /// fetching belongs to the workspace, painting belongs here.
+    images: std::collections::HashMap<usize, crate::images::Pair>,
     /// Side-by-side plan, or `None` in unified. Index-parallel with `rows` by
     /// construction (`split::plan`), so turning it on changes no index.
     split: Option<Vec<crate::split::Cell>>,
@@ -84,6 +87,7 @@ impl DiffView {
             last_width: 0.,
             text_w: px(600.),
             split: None,
+            images: std::collections::HashMap::new(),
         }
     }
 
@@ -169,6 +173,68 @@ impl DiffView {
     /// remeasure at all.
     pub fn set_matches(&mut self, matches: Vec<crate::search::Match>) {
         self.matches = matches;
+    }
+
+    /// Show a file's before and after images.
+    ///
+    /// The header row grows to hold them, so it has to be re-measured — the
+    /// same reason `set_threads` re-measures the rows it touches.
+    pub fn set_images(&mut self, file_ix: usize, pair: crate::images::Pair) {
+        self.images.insert(file_ix, pair);
+        if let Some(row) = self
+            .data
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::FileHeader { file_ix: f } if *f == file_ix))
+        {
+            self.list.remeasure_items(row..row + 1);
+        }
+    }
+
+    /// The fetched image pair for a file, if it has one. For tests and for the
+    /// renderer's own guard.
+    pub fn image_bytes(&self, file_ix: usize) -> Option<&crate::images::Pair> {
+        self.images.get(&file_ix)
+    }
+
+    /// One side of an image comparison, or a note that there is nothing there.
+    fn image_side(
+        &self,
+        bytes: Option<&Vec<u8>>,
+        format: gpui::ImageFormat,
+        label: &str,
+        theme: &Theme,
+    ) -> gpui::AnyElement {
+        let body = match bytes {
+            Some(b) => gpui::img(std::sync::Arc::new(gpui::Image {
+                format,
+                bytes: b.clone(),
+                // gpui caches decoded frames by this id, so two different
+                // images must not share one. The length is a poor hash but the
+                // pair is only ever old-versus-new of one file, and those
+                // differ or there would be no diff.
+                id: b.len() as u64,
+            }))
+            .max_w(px(360.))
+            .into_any_element(),
+            None => div()
+                .text_size(px(theme.ui_sm))
+                .text_color(theme.text_tertiary)
+                .child(SharedString::from("(absent)"))
+                .into_any_element(),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(theme.s1))
+            .child(
+                div()
+                    .text_size(px(theme.ui_xs))
+                    .text_color(theme.text_tertiary)
+                    .child(SharedString::from(label.to_string())),
+            )
+            .child(body)
+            .into_any_element()
     }
 
     /// Turn side-by-side on or off.
@@ -401,6 +467,33 @@ impl DiffView {
             }
         }
         match self.data.rows[ix] {
+            Row::FileHeader { file_ix }
+                if self.images.get(&file_ix).is_some_and(|p| !p.is_empty()) =>
+            {
+                let pair = &self.images[&file_ix];
+                let path = self.data.files[file_ix].display_path().to_string();
+                let format = crate::images::format_of(&path).unwrap_or(gpui::ImageFormat::Png);
+                div()
+                    .flex()
+                    .flex_col()
+                    .bg(theme.surface_raised)
+                    .child(
+                        div()
+                            .px(px(theme.s2))
+                            .h(px(theme.line_height))
+                            .text_color(theme.text_primary)
+                            .child(SharedString::from(path)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(theme.s4))
+                            .p(px(theme.s3))
+                            .child(self.image_side(pair.old.as_ref(), format, "before", theme))
+                            .child(self.image_side(pair.new.as_ref(), format, "after", theme)),
+                    )
+                    .into_any_element()
+            }
             Row::FileHeader { file_ix } => div()
                 .px_2()
                 .h(px(theme.line_height))

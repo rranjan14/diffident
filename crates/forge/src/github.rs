@@ -85,6 +85,13 @@ impl<R: GhRunner> Forge for GitHub<R> {
         self.runner.run(&args, None)
     }
 
+    fn file_encoded_at(&self, repo: &Repo, path: &str, sha: &str) -> Result<String, GhError> {
+        // No raw Accept header here, deliberately: the default envelope is
+        // JSON with base64 inside, which survives a String round trip.
+        let endpoint = format!("repos/{}/contents/{path}?ref={sha}", repo.slug());
+        self.runner.run(&["api", &endpoint], None)
+    }
+
     fn set_resolved(&self, thread_id: &str, resolved: bool) -> Result<(), GhError> {
         crate::threads::set_resolved(&self.runner, thread_id, resolved)
     }
@@ -167,6 +174,22 @@ mod tests {
         let github = GitHub::new(gh);
         let text = github.file_at(&repo(), "src/a.rs", "abc").unwrap();
         assert_eq!(text.lines().count(), 2);
+    }
+
+    #[test]
+    fn encoded_contents_deliberately_omit_the_raw_header() {
+        // Raw bytes cannot travel through GhRunner, which returns a String;
+        // lossy UTF-8 would corrupt an image beyond recognition.
+        let gh = FakeGh::new().with(
+            "api repos/o/r/contents/logo.png?ref=abc",
+            r#"{"content":"aGk="}"#,
+        );
+        let github = GitHub::new(gh);
+        github.file_encoded_at(&repo(), "logo.png", "abc").unwrap();
+        assert!(
+            !github.runner().calls()[0].contains("raw"),
+            "the raw header would defeat the point"
+        );
     }
 
     #[test]

@@ -1373,6 +1373,14 @@ impl Workspace {
             return;
         };
         let cursor = diff.read(cx).cursor;
+        // `Enter` on an image file's header shows the picture instead. Same
+        // key, same intent — "show me what I cannot see from here".
+        if let Some(&diffident_diff::Row::FileHeader { file_ix }) = data.rows.get(cursor)
+            && let Some(file) = data.files.get(file_ix)
+            && crate::images::format_of(file.display_path()).is_some()
+        {
+            return self.load_image(number, file_ix, file.display_path().to_string(), cx);
+        }
         let Some(&diffident_diff::Row::Expander {
             file_ix,
             before_hunk_ix,
@@ -1448,6 +1456,55 @@ impl Workspace {
                     }
                     Ok(None) => this.error = Some("nothing left to expand there".into()),
                     Err(e) => this.error = Some(format!("could not expand: {e}")),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Fetch both sides of an image and hand them to the view.
+    ///
+    /// Both fetches are allowed to fail independently: an image that was added
+    /// has no old side and an image that was deleted has no new one, and
+    /// neither is an error — it is the thing the reviewer is looking at.
+    fn load_image(&mut self, number: u32, file_ix: usize, path: String, cx: &mut Context<Self>) {
+        let Some(review) = self.reviews.iter().find(|r| r.id.number == number) else {
+            return;
+        };
+        let head = match &review.state {
+            LoadState::Ready { head_sha, .. } => head_sha.clone(),
+            _ => return,
+        };
+        let base = review.branch.clone();
+        let forge = self.forge.clone();
+        let repo = self.repo.clone();
+        cx.spawn(async move |this, cx| {
+            let pair = cx
+                .background_executor()
+                .spawn(async move {
+                    let fetch = |sha: &str| {
+                        forge
+                            .file_encoded_at(&repo, &path, sha)
+                            .ok()
+                            .and_then(|json| crate::images::decode_contents(&json).ok())
+                    };
+                    crate::images::Pair {
+                        old: fetch(&base),
+                        new: fetch(&head),
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if pair.is_empty() {
+                    this.error = Some("could not fetch either side of that image".into());
+                } else if let Some(diff) = this.diff() {
+                    diff.update(cx, |view, cx| {
+                        view.set_images(file_ix, pair);
+                        cx.notify();
+                    });
+                    this.error = None;
                 }
                 cx.notify();
             })
@@ -2784,6 +2841,49 @@ mod tests {
                     .line(v.files())
                     .is_some_and(|l| l.text == "l1")),
                 "and they are the real file's lines"
+            );
+        });
+    }
+
+    /// §8's image diffs, end to end through the real keymap.
+    ///
+    /// `Enter` on an image file's header fetches both sides. The assertion is
+    /// that the bytes arrive in the view: without them the header renders as
+    /// text and the reviewer is asked to approve a change they cannot see.
+    #[gpui::test]
+    fn enter_on_an_image_header_fetches_both_sides(cx: &mut gpui::TestAppContext) {
+        // git reports a binary file with no hunks at all.
+        let binary = "diff --git a/logo.png b/logo.png\nindex 111..222 100644\nBinary files a/logo.png and b/logo.png differ\n";
+        let forge = GitHub::new(
+            FakeGh::new()
+                .with("api repos/o/r/contents/logo.png?ref=abc", r#"{"content":"bmV3"}"#)
+                .with("api repos/o/r/contents/logo.png?ref=b", r#"{"content":"b2xk"}"#),
+        );
+        let (workspace, cx) = workspace_with_named_diff(cx, forge, binary);
+
+        let header = workspace.read_with(cx, |this, cx| {
+            this.diff()
+                .unwrap()
+                .read(cx)
+                .rows()
+                .iter()
+                .position(|r| matches!(r, diffident_diff::Row::FileHeader { .. }))
+                .expect("the file has a header")
+        });
+        workspace.update(cx, |this, cx| {
+            if let Some(v) = this.diff() {
+                v.update(cx, |v, _| v.scroll_to(header));
+            }
+        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |this, cx| {
+            let v = this.diff().unwrap();
+            let got = v.read(cx).image_bytes(0);
+            assert_eq!(got.map(|p| (p.old.clone(), p.new.clone())),
+                Some((Some(b"old".to_vec()), Some(b"new".to_vec()))),
+                "both sides arrived and were base64-decoded"
             );
         });
     }
