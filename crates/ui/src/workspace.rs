@@ -21,7 +21,7 @@ use diffident_model::reviewed::Reviewed;
 use diffident_session::store::{Session, SessionKey, Store, default_root};
 use diffident_forge::stack::next_in_stack;
 use gpui::{
-    Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString,
+    App, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString,
     Window, div, prelude::*, px, uniform_list,
 };
 
@@ -44,6 +44,9 @@ enum Mode {
     /// Typing a search. Matches update on every keystroke, so the reviewer
     /// sees what they are about to jump to before committing to it.
     Searching(TextBuffer),
+    /// The command palette: a query and where the selection sits in the
+    /// filtered list.
+    Palette(TextBuffer, usize),
 }
 
 impl Mode {
@@ -61,6 +64,7 @@ impl Mode {
             // Like the composer: no context, so every letter reaches the input
             // instead of firing the diff binding that shares it.
             Mode::Searching(_) => None,
+            Mode::Palette(..) => None,
         }
     }
 }
@@ -848,6 +852,94 @@ impl Workspace {
         .detach();
     }
 
+    /// The command palette: a query, and the commands matching it.
+    fn render_palette(
+        &self,
+        buffer: &TextBuffer,
+        selected: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = self.theme.clone();
+        let all = self.commands(cx);
+        let hits = crate::palette::filter(&all, &buffer.text());
+        // Bounded so a long list cannot push the query off screen. The
+        // selection is always inside it because typing resets it to zero and
+        // up/down wrap within the filtered length.
+        let shown: Vec<_> = hits.iter().take(12).collect();
+
+        div()
+            .id("palette")
+            .track_focus(&self.composer_focus)
+            .key_context("Palette")
+            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
+                let k = &ev.keystroke;
+                let action = key_action(
+                    &k.key,
+                    k.key_char.as_deref(),
+                    k.modifiers.platform,
+                    k.modifiers.control,
+                );
+                this.palette_key(&action, window, cx);
+            }))
+            .flex()
+            .flex_col()
+            .w_full()
+            .border_t_1()
+            .border_color(theme.border_strong)
+            .bg(theme.surface_overlay)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(theme.s2))
+                    .px(px(theme.s3))
+                    .py(px(theme.s2))
+                    .border_b_1()
+                    .border_color(theme.border_subtle)
+                    .child(div().text_color(theme.text_tertiary).child("⌘P"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_color(theme.text_primary)
+                            .child(SharedString::from(buffer.text())),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(theme.ui_sm))
+                            .text_color(theme.text_tertiary)
+                            .child(SharedString::from(format!("{} commands", hits.len()))),
+                    ),
+            )
+            .children(shown.into_iter().enumerate().map(|(row, ix)| {
+                let cmd = &all[*ix];
+                let is_selected = row == selected;
+                div()
+                    .flex()
+                    .justify_between()
+                    .gap(px(theme.s3))
+                    .px(px(theme.s3))
+                    .py(px(theme.s1))
+                    .when(is_selected, |d| d.bg(theme.accent_soft))
+                    .child(
+                        div()
+                            .font_family(theme.font_ui.clone())
+                            .text_size(px(theme.ui_md))
+                            .text_color(if is_selected {
+                                theme.text_primary
+                            } else {
+                                theme.text_secondary
+                            })
+                            .child(SharedString::from(cmd.label.clone())),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(theme.ui_sm))
+                            .text_color(theme.text_tertiary)
+                            .child(SharedString::from(cmd.keys.clone().unwrap_or_default())),
+                    )
+            }))
+    }
+
     /// The search input: one line, pinned under the diff.
     fn render_search(&self, buffer: &TextBuffer, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.theme.clone();
@@ -1258,6 +1350,84 @@ impl Workspace {
         if let Some(number) = self.active_number() {
             self.sync_threads_for(number, cx);
         }
+    }
+
+    /// The commands the palette can run, discovered from the registry.
+    fn commands(&self, cx: &App) -> Vec<crate::palette::Command> {
+        crate::palette::commands(cx.all_action_names(), &crate::navigate::key_bindings())
+    }
+
+    /// `cmd-p` — open the command palette.
+    fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.enter_mode(Mode::Palette(TextBuffer::default(), 0), window, cx);
+    }
+
+    /// A keystroke while the palette has focus.
+    ///
+    /// `enter` runs the highlighted command by asking gpui to build it from its
+    /// registered name and dispatching it — the same path a keypress takes, so
+    /// a command cannot behave differently depending on how it was reached.
+    fn palette_key(&mut self, key: &Key, window: &mut Window, cx: &mut Context<Self>) {
+        let all = self.commands(cx);
+        match key {
+            Key::Cancel => return self.leave_mode(window, cx),
+            Key::Down => {
+                if let Mode::Palette(buf, sel) = &mut self.mode {
+                    let n = crate::palette::filter(&all, &buf.text()).len();
+                    *sel = if n == 0 { 0 } else { (*sel + 1) % n };
+                    cx.notify();
+                }
+                return;
+            }
+            Key::Up => {
+                if let Mode::Palette(buf, sel) = &mut self.mode {
+                    let n = crate::palette::filter(&all, &buf.text()).len();
+                    *sel = if n == 0 { 0 } else { (*sel + n - 1) % n };
+                    cx.notify();
+                }
+                return;
+            }
+            Key::Save | Key::Newline => {
+                let chosen = match &self.mode {
+                    Mode::Palette(buf, sel) => crate::palette::filter(&all, &buf.text())
+                        .get(*sel)
+                        .map(|ix| all[*ix].action.clone()),
+                    _ => None,
+                };
+                self.leave_mode(window, cx);
+                if let Some(name) = chosen {
+                    match cx.build_action(&name, None) {
+                        Ok(action) => window.dispatch_action(action, cx),
+                        // Every name came from the registry a moment ago, so
+                        // this is unreachable in practice — but silently doing
+                        // nothing on `enter` is the one outcome a palette must
+                        // never have.
+                        Err(e) => self.refuse(&format!("could not run {name}: {e}"), cx),
+                    }
+                }
+                return;
+            }
+            Key::Ignore => return,
+            _ => {}
+        }
+        let Mode::Palette(buf, sel) = &mut self.mode else {
+            return;
+        };
+        match key {
+            Key::Insert(text) => buf.insert(text),
+            Key::Backspace => buf.backspace(),
+            Key::Delete => buf.delete(),
+            Key::Left => buf.left(),
+            Key::Right => buf.right(),
+            Key::Home => buf.home(),
+            Key::End => buf.end(),
+            _ => return,
+        }
+        // Typing changes the list under the selection, so put it back at the
+        // top rather than leaving it pointing at whatever now occupies that
+        // row — which is how a palette runs the command you did not mean.
+        *sel = 0;
+        cx.notify();
     }
 
     /// `/` — open the search input.
@@ -1813,6 +1983,9 @@ impl Render for Workspace {
                 this.sidebar_collapsed = !this.sidebar_collapsed;
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &OpenPalette, window, cx| {
+                this.open_palette(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &StartSearch, window, cx| {
                 this.start_search(window, cx)
             }))
@@ -1940,6 +2113,9 @@ impl Render for Workspace {
                     .children(match &self.mode {
                         Mode::Composing(c) => Some(self.render_composer(c, cx).into_any_element()),
                         Mode::Searching(b) => Some(self.render_search(b, cx).into_any_element()),
+                        Mode::Palette(b, sel) => {
+                            Some(self.render_palette(b, *sel, cx).into_any_element())
+                        }
                         Mode::Resolving(s) => Some(self.render_resolver(s).into_any_element()),
                         Mode::Confirming(s) => Some(self.render_confirm(s, cx).into_any_element()),
                         _ => None,
@@ -2408,6 +2584,60 @@ mod tests {
             workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).cursor),
             first,
             "`N` came back"
+        );
+    }
+
+    /// §8's `Cmd-P`, end to end: the palette must actually run what it shows.
+    ///
+    /// It dispatches by asking gpui to build the action from its registered
+    /// name, so the assertion that matters is that the *effect* happens — not
+    /// that a string was selected. Here that effect is the cursor moving,
+    /// which is what `Next line` does.
+    #[gpui::test]
+    fn cmd_p_runs_the_command_it_has_highlighted(cx: &mut gpui::TestAppContext) {
+        let (workspace, cx) =
+            workspace_with_diff(cx, GitHub::new(FakeGh::new()), Vec::new());
+        let before = workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).cursor);
+
+        cx.simulate_keystrokes("cmd-p");
+        assert!(
+            workspace.read_with(cx, |this, _| matches!(this.mode, Mode::Palette(..))),
+            "cmd-p opens the palette"
+        );
+
+        // "next line" ranks Next line first. Typing it also proves the letters
+        // reach the input rather than firing the diff bindings that share them
+        // — `n` is NextMatch and `x` is DeleteDraft.
+        cx.simulate_input("next line");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+
+        assert!(
+            workspace.read_with(cx, |this, _| matches!(this.mode, Mode::Browsing)),
+            "the palette closed"
+        );
+        assert_eq!(
+            workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).cursor),
+            before + 1,
+            "the command actually ran"
+        );
+    }
+
+    /// Escape must close the palette without running anything.
+    #[gpui::test]
+    fn escape_closes_the_palette_without_running_a_command(cx: &mut gpui::TestAppContext) {
+        let (workspace, cx) =
+            workspace_with_diff(cx, GitHub::new(FakeGh::new()), Vec::new());
+        let before = workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).cursor);
+        cx.simulate_keystrokes("cmd-p");
+        cx.simulate_input("next line");
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(workspace.read_with(cx, |this, _| matches!(this.mode, Mode::Browsing)));
+        assert_eq!(
+            workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).cursor),
+            before,
+            "nothing ran"
         );
     }
 

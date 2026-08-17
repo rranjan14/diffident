@@ -7,6 +7,7 @@ pub mod diff_view;
 pub mod file_list;
 pub mod loader;
 pub mod navigate;
+pub mod palette;
 pub mod rail;
 pub mod residency;
 pub mod search;
