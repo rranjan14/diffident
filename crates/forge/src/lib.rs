@@ -59,12 +59,18 @@ pub struct PrDetail {
 
 /// The one seam between diffident and a code host.
 ///
-/// Deliberately narrow: three methods covering the whole read path. Submit,
-/// threads and commits arrive in later plans — do not add stubs for them now.
+/// Deliberately narrow: four methods covering the read path and review submission.
+/// Threads and commits arrive in later plans — do not add stubs for them now.
 pub trait Forge {
     fn list_prs(&self, repo: &Repo) -> Result<Vec<PrSummary>, gh::GhError>;
     fn pr_detail(&self, repo: &Repo, number: u32) -> Result<PrDetail, gh::GhError>;
     /// Raw unified diff text. Intentionally a `String`: this layer knows
     /// nothing about patch syntax, and `diff::parser` knows nothing about GitHub.
     fn pr_diff(&self, repo: &Repo, number: u32) -> Result<String, gh::GhError>;
+    /// Post a review. `payload` is the create-review JSON, built by the caller.
+    ///
+    /// Takes serialised JSON rather than a typed struct: the shape belongs to
+    /// whoever knows about comments, and this layer deliberately knows nothing
+    /// about them — the same reason `pr_diff` returns a `String`.
+    fn create_review(&self, repo: &Repo, number: u32, payload: &str) -> Result<(), gh::GhError>;
 }
