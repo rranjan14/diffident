@@ -1830,13 +1830,208 @@ impl Render for Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{DiffView, Entity, Placeholder, Residency, Theme, Workspace, placeholder};
+    use super::{DiffView, Entity, Mode, Placeholder, Residency, Theme, Workspace, placeholder};
     use gpui::AppContext as _;
     use diffident_forge::gh::FakeGh;
     use diffident_forge::github::GitHub;
     use diffident_forge::threads::{ReviewThread, ThreadComment};
     use diffident_model::{LoadState, Review, ReviewId};
     use std::sync::Arc;
+
+    /// A diff with one file and enough rows to scroll: 1 context, 1 removed,
+    /// 1 added, then 30 more context lines.
+    fn many_rows() -> String {
+        let mut d =
+            String::from("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,32 +1,32 @@\n ctx\n-old\n+new\n");
+        for i in 0..30 {
+            d.push_str(&format!(" line{i}\n"));
+        }
+        d
+    }
+
+    /// A `Workspace` with one review resident, drawn, and ready for keystrokes.
+    ///
+    /// Seeded directly rather than driven through a fetch: these tests are
+    /// about what the *keymap* does once a review is on screen, and standing
+    /// one up through `select` would make every one of them also a test of the
+    /// loader.
+    fn workspace_with_diff(
+        cx: &mut gpui::TestAppContext,
+        forge: GitHub<FakeGh>,
+        threads: Vec<ReviewThread>,
+    ) -> (Entity<Workspace>, &mut gpui::VisualTestContext) {
+        let files = diffident_diff::parser::parse(&many_rows());
+        let rows = diffident_diff::rows::build_rows(&files);
+        let data = Arc::new(crate::loader::ReviewData {
+            highlights: vec![Vec::new(); rows.len()],
+            files,
+            rows,
+        });
+        let repo = diffident_forge::Repo {
+            owner: "o".into(),
+            name: "r".into(),
+        };
+        // The keymap is installed by `main.rs`, not by `Workspace`, so a test
+        // app has none until it does the same. Using the real `key_bindings()`
+        // is the point: these tests exercise the bindings that ship.
+        cx.update(|cx| cx.bind_keys(crate::navigate::key_bindings()));
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let mut this = Workspace::new(Arc::new(forge), repo, None, window, cx);
+            this.reviews.push(Review {
+                id: ReviewId {
+                    repo: "o/r".into(),
+                    number: 1,
+                },
+                title: "t".into(),
+                branch: "b".into(),
+                depth: 0,
+                is_draft: false,
+                head_sha: "abc".into(),
+                rebased: false,
+                state: LoadState::Idle,
+            });
+            this.active = Some(0);
+            this.threads.insert(1, Ok(threads));
+            let view = cx.new(|_| DiffView::new(data.clone(), Theme::dark()));
+            this.residency.admit(1, (data, view), "abc");
+            // The keymap only reaches the workspace when its own handle holds
+            // focus — the same thing `enter_mode` does on every mode change.
+            this.focus.focus(window, cx);
+            this
+        });
+        // A frame must be drawn before any keystroke: key contexts live on the
+        // element tree, so an undrawn window has no `Diff` scope to match.
+        cx.run_until_parked();
+        (workspace, cx)
+    }
+
+    /// Everything below rests on this: a simulated keystroke must travel the
+    /// real path — keymap, key context, focus chain, action handler. If it
+    /// does not, the rest of these tests would pass while asserting nothing.
+    #[gpui::test]
+    fn a_simulated_keystroke_reaches_the_real_action_handler(cx: &mut gpui::TestAppContext) {
+        let (workspace, cx) =
+            workspace_with_diff(cx, GitHub::new(FakeGh::new()), Vec::new());
+        let start = workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).cursor);
+        cx.simulate_keystrokes("j");
+        let moved = workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).cursor);
+        assert_eq!(moved, start + 1, "`j` must move the cursor one row");
+    }
+
+    /// An unresolved thread anchored to `line` on the new side.
+    fn thread_at(line: u32) -> ReviewThread {
+        ReviewThread {
+            id: "PRRT_1".into(),
+            path: "a.rs".into(),
+            line: Some(line),
+            original_line: Some(line),
+            on_old_side: false,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![ThreadComment {
+                id: "PRRC_1".into(),
+                author: "octocat".into(),
+                body: "nit".into(),
+            }],
+        }
+    }
+
+    /// §9's Phase 7 gate, half of it: "resolve … round-trips to GitHub".
+    ///
+    /// Driven through the real keymap rather than by calling the handler, so
+    /// this covers the binding, the key context and the focus chain too — the
+    /// three things that have broken before and that a direct call would miss.
+    #[gpui::test]
+    fn shift_space_resolves_the_selected_thread(cx: &mut gpui::TestAppContext) {
+        let forge = GitHub::new(FakeGh::new().with(
+            "api graphql --input -",
+            r#"{"data":{"resolveReviewThread":{"thread":{"id":"PRRT_1","isResolved":true}}}}"#,
+        ));
+        let (workspace, cx) = workspace_with_diff(cx, forge, vec![thread_at(2)]);
+
+        assert!(
+            !workspace.read_with(cx, |this, _| this.threads_of(1)[0].is_resolved),
+            "starts open"
+        );
+        cx.simulate_keystrokes("shift-space");
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |this, _| {
+            assert!(this.threads_of(1)[0].is_resolved, "GitHub took it, so it reads resolved");
+            assert!(this.error.is_none(), "and nothing is reported as wrong");
+        });
+    }
+
+    /// The other half: "reply … round-trips to GitHub".
+    ///
+    /// `a` opens the composer, which holds no key context, so the typing below
+    /// travels a different path from the keystroke that opened it — that seam
+    /// is exactly where Phase 5b once left focus orphaned and killed every key
+    /// in the app.
+    #[gpui::test]
+    fn a_then_typing_then_cmd_enter_posts_a_reply(cx: &mut gpui::TestAppContext) {
+        let forge = GitHub::new(FakeGh::new().with(
+            "api graphql --input -",
+            r#"{"data":{"addPullRequestReviewThreadReply":{"comment":
+               {"id":"PRRC_9","author":{"login":"rranjan14"},"body":"done"}}}}"#,
+        ));
+        let (workspace, cx) = workspace_with_diff(cx, forge, vec![thread_at(2)]);
+
+        cx.simulate_keystrokes("a");
+        assert!(
+            workspace.read_with(cx, |this, _| matches!(this.mode, Mode::Composing(_))),
+            "`a` opens the composer"
+        );
+        cx.simulate_input("done");
+        cx.simulate_keystrokes("cmd-enter");
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |this, _| {
+            let comments = &this.threads_of(1)[0].comments;
+            assert_eq!(comments.len(), 2, "the reply joined the thread");
+            assert_eq!(comments[1].body, "done");
+            assert_eq!(
+                comments[1].author, "rranjan14",
+                "attributed from GitHub's own answer, not guessed locally"
+            );
+            assert!(
+                matches!(this.mode, Mode::Browsing),
+                "and the composer closed, handing focus back"
+            );
+        });
+    }
+
+    /// A tall row at the very end is where scroll clamping breaks: the content
+    /// grows after the list has already decided where the end is. Nothing else
+    /// in the suite puts a thread on the last line of a diff.
+    #[gpui::test]
+    fn the_last_line_stays_reachable_with_a_thread_on_it(cx: &mut gpui::TestAppContext) {
+        // 32 is the final new-side line number in the fixture.
+        let (workspace, cx) =
+            workspace_with_diff(cx, GitHub::new(FakeGh::new()), vec![thread_at(32)]);
+
+        let (last_row, thread_row) = workspace.read_with(cx, |this, cx| {
+            let view = this.diff().unwrap();
+            let rows = view.read(cx).rows().len();
+            let placed = crate::threads::inline_groups(
+                &this.threads_of(1),
+                &this.data().unwrap().files,
+                view.read(cx).rows(),
+            );
+            (rows - 1, placed.first().map(|(row, _)| *row))
+        });
+        assert!(
+            thread_row.is_some_and(|r| r >= last_row.saturating_sub(3)),
+            "the thread really is near the end of the diff, or this proves nothing"
+        );
+
+        cx.simulate_keystrokes("shift-g");
+        assert_eq!(
+            workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).cursor),
+            last_row,
+            "G must reach the final row even though a tall thread sits just above it"
+        );
+    }
 
     /// One unresolved thread, the state the guarantee below is about.
     fn open_thread() -> ReviewThread {
