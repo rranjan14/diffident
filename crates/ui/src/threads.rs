@@ -25,6 +25,13 @@ impl Placed<'_> {
 /// is returned with `row: None` rather than dropped. A thread silently missing
 /// from the UI is worse than one shown out of place: the reviewer would answer
 /// a question they never saw.
+///
+/// **The result is index-parallel with `threads`, and that is load-bearing**
+/// (§3's rows/highlights parity, in miniature): the pane highlights `placed[i]`
+/// while `space` and `a` act on `threads[i]` through [`selected`]. Sorting here
+/// — as [`by_row`] does, one function below — would point the highlight at one
+/// conversation and resolve or reply to another. `placement_is_index_parallel_with_its_input`
+/// is the guard.
 pub fn place<'a>(
     threads: &'a [ReviewThread],
     files: &[DiffFile],
@@ -225,6 +232,31 @@ mod tests {
         let placed = place(&t, &files, &rows);
         assert_eq!(placed.len(), 3);
         assert_eq!(unanchored(&placed), 2);
+    }
+
+    #[test]
+    fn placement_is_index_parallel_with_its_input() {
+        // Load-bearing since Phase 7c: the pane highlights `placed[i]` while
+        // `space` and `a` act on `threads[i]` via `selected`. Sorting or
+        // filtering here would point the highlight at one conversation and
+        // resolve or reply to a different one — silently, on someone else's
+        // pull request. `by_row` immediately below *does* sort, so this is one
+        // plausible edit away rather than a hypothetical.
+        let (files, rows) = fixture();
+        let t = [
+            // Unanchored first: any row-order sort would move it last.
+            thread("a.rs", Some(999), false),
+            thread("a.rs", Some(2), false),
+            thread("a.rs", Some(1), false),
+        ];
+        let placed = place(&t, &files, &rows);
+        assert_eq!(placed.len(), t.len(), "every thread comes back");
+        for (ix, p) in placed.iter().enumerate() {
+            assert!(
+                std::ptr::eq(p.thread, &t[ix]),
+                "placed[{ix}] is not threads[{ix}] — the cursor now lies"
+            );
+        }
     }
 
     #[test]
