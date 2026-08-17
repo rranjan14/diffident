@@ -78,6 +78,11 @@ pub struct Workspace {
     /// Why threads are missing for a review, when they are. Kept apart from
     /// `error` (the rail's) because this one is about one pane, not the app.
     threads_error: std::collections::HashMap<u32, String>,
+    /// Which thread in the right-hand pane the reviewer is acting on.
+    ///
+    /// Not per-PR: switching reviews resets it, because carrying "thread 3"
+    /// across to a PR with one thread would silently point somewhere else.
+    thread_cursor: usize,
     /// What the window is doing. One value, so two full-window states cannot
     /// both be active — which three separate `Option`s would eventually allow.
     mode: Mode,
@@ -111,6 +116,7 @@ impl Workspace {
             drafts: Drafts::new(),
             threads: std::collections::HashMap::new(),
             threads_error: std::collections::HashMap::new(),
+            thread_cursor: 0,
             mode: Mode::Browsing,
             visual_anchor: None,
             composer_focus: cx.focus_handle(),
@@ -221,6 +227,7 @@ impl Workspace {
             self.residency.remember_cursor(outgoing, row);
         }
         self.active = Some(ix);
+        self.thread_cursor = 0;
         let repo = self.repo.clone();
 
         // Already resident: promote to most-recently-used and skip the fetch
@@ -712,7 +719,8 @@ impl Workspace {
         let lost = crate::threads::unanchored(&placed);
 
         let mut out: Vec<gpui::AnyElement> = Vec::new();
-        for p in &placed {
+        for (ix, p) in placed.iter().enumerate() {
+            let is_selected = ix == self.thread_cursor.min(placed.len().saturating_sub(1));
             let t = p.thread;
             let where_ = match p.row {
                 Some(_) => format!("{}:{}", t.path, t.anchor_line().unwrap_or(0)),
@@ -730,6 +738,9 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap_1()
+                    .when(is_selected, |this| {
+                        this.bg(theme.row_selected).border_l_2().border_color(theme.text)
+                    })
                     .px_2()
                     .py_1()
                     .child(
@@ -899,6 +910,17 @@ impl Workspace {
         };
         let distance = diff.read(cx).rows_per_half_page();
         self.move_cursor(move |rows, ix| half_page(rows, ix, distance, down), cx);
+    }
+
+    /// `ctrl-tab` / `ctrl-shift-tab`: move to the adjacent review in the rail.
+    /// `t` / `T` — move between the conversations on this PR.
+    fn step_thread(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some(number) = self.active_number() else {
+            return;
+        };
+        let count = self.threads.get(&number).map_or(0, Vec::len);
+        self.thread_cursor = crate::threads::step(count, self.thread_cursor, delta);
+        cx.notify();
     }
 
     /// `ctrl-tab` / `ctrl-shift-tab`: move to the adjacent review in the rail.
@@ -1350,6 +1372,8 @@ impl Render for Workspace {
                 this.visual_anchor = None;
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &NextThread, _, cx| this.step_thread(1, cx)))
+            .on_action(cx.listener(|this, _: &PrevThread, _, cx| this.step_thread(-1, cx)))
             .on_action(cx.listener(|this, _: &NextReview, _, cx| this.step_review(1, cx)))
             .on_action(cx.listener(|this, _: &PrevReview, _, cx| this.step_review(-1, cx)))
             .on_action(cx.listener(|this, _: &Submit, window, cx| this.begin_submit(window, cx)))
