@@ -48,6 +48,9 @@ pub struct DiffView {
     /// viewport borrows the `ListState` and `render_row` runs while the list
     /// already holds that borrow.
     text_w: Pixels,
+    /// Side-by-side plan, or `None` in unified. Index-parallel with `rows` by
+    /// construction (`split::plan`), so turning it on changes no index.
+    split: Option<Vec<crate::split::Cell>>,
 }
 
 impl DiffView {
@@ -80,6 +83,7 @@ impl DiffView {
             wrap: true,
             last_width: 0.,
             text_w: px(600.),
+            split: None,
         }
     }
 
@@ -165,6 +169,89 @@ impl DiffView {
     /// remeasure at all.
     pub fn set_matches(&mut self, matches: Vec<crate::search::Match>) {
         self.matches = matches;
+    }
+
+    /// Turn side-by-side on or off.
+    ///
+    /// Every row changes width and therefore may change height, so all of them
+    /// are re-measured — the same reason toggling wrap does.
+    pub fn set_split(&mut self, on: bool) {
+        self.split = on.then(|| crate::split::plan(&self.data.files, &self.data.rows));
+        self.list.remeasure_items(0..self.data.rows.len());
+    }
+
+    pub fn is_split(&self) -> bool {
+        self.split.is_some()
+    }
+
+    /// Whether the cursor should skip `row` — an absorbed row draws nothing, so
+    /// landing on it looks like the key stopped working.
+    pub fn skips(&self, row: usize) -> bool {
+        self.split
+            .as_ref()
+            .is_some_and(|cells| crate::split::is_absorbed(cells, row))
+    }
+
+    /// One side of a split line: number, sigil and text, or blank.
+    fn half(&self, row: Option<usize>, theme: &Theme, old_side: bool) -> gpui::AnyElement {
+        let Some(row) = row else {
+            // A blank half still occupies its column, or the two sides stop
+            // lining up the moment one of them is missing.
+            return div()
+                .w(self.text_w / 2.)
+                .bg(theme.surface_raised)
+                .into_any_element();
+        };
+        let Some(line) = self.data.rows[row].line(&self.data.files) else {
+            return div().w(self.text_w / 2.).into_any_element();
+        };
+        let (bg, num) = if old_side {
+            (
+                if line.kind == LineKind::Removed { theme.removed_bg } else { theme.surface },
+                line.old_lineno,
+            )
+        } else {
+            (
+                if line.kind == LineKind::Added { theme.added_bg } else { theme.surface },
+                line.new_lineno,
+            )
+        };
+        let style = theme.code_style();
+        let ranges: Vec<(Range<usize>, HighlightStyle)> =
+            crate::search::overlay(&self.data.highlights[row], &[])
+                .into_iter()
+                .map(|sp| {
+                    (
+                        sp.range,
+                        HighlightStyle {
+                            color: sp.color.map(|c| rgb(c).into()),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect();
+        div()
+            .flex()
+            .items_start()
+            .w(self.text_w / 2.)
+            .bg(bg)
+            .child(
+                div()
+                    .w(px(38.))
+                    .flex_none()
+                    .text_color(theme.text_tertiary)
+                    .child(SharedString::from(
+                        num.map(|n| n.to_string()).unwrap_or_default(),
+                    )),
+            )
+            .child(
+                div()
+                    .w(self.text_w / 2. - px(38.))
+                    .when(self.wrap, |d| d.whitespace_normal())
+                    .when(!self.wrap, |d| d.truncate())
+                    .child(StyledText::new(line.text.clone()).with_default_highlights(&style, ranges)),
+            )
+            .into_any_element()
     }
 
     /// The threads that render under row `ix`, if any.
@@ -271,6 +358,48 @@ impl DiffView {
     }
 
     fn render_row(&self, ix: usize, theme: &Theme) -> impl IntoElement + use<> {
+        // In split mode a code line draws as two columns; everything else —
+        // headers, hunks, expanders, spacers — draws exactly as it does in
+        // unified, across the full width.
+        if let Some(cells) = &self.split {
+            match cells[ix] {
+                crate::split::Cell::Absorbed => {
+                    // Drawn on an earlier row. Zero height so it takes no space,
+                    // but the row still exists and still has an anchor.
+                    return div().into_any_element();
+                }
+                crate::split::Cell::Line { left, right } => {
+                    let threads = self.threads_at(ix);
+                    let pair = div()
+                        .flex()
+                        .items_start()
+                        .when(ix == self.cursor, |d| d.bg(theme.accent_soft))
+                        .child(self.half(left, theme, true))
+                        .child(
+                            div()
+                                .w(px(1.))
+                                .h_full()
+                                .flex_none()
+                                .bg(theme.border_subtle),
+                        )
+                        .child(self.half(right, theme, false));
+                    if threads.is_empty() {
+                        return pair.into_any_element();
+                    }
+                    return div()
+                        .flex()
+                        .flex_col()
+                        .child(pair)
+                        .children(
+                            threads
+                                .iter()
+                                .map(|t| self.render_inline_thread(t, theme).into_any_element()),
+                        )
+                        .into_any_element();
+                }
+                crate::split::Cell::Full => {}
+            }
+        }
         match self.data.rows[ix] {
             Row::FileHeader { file_ix } => div()
                 .px_2()

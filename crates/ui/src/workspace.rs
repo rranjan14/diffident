@@ -1357,6 +1357,22 @@ impl Workspace {
         crate::palette::commands(cx.all_action_names(), &crate::navigate::key_bindings())
     }
 
+    /// `\` — toggle side-by-side.
+    ///
+    /// Applies to the review on screen only, like `w`: a layout chosen for one
+    /// diff is rarely the one you want for the next, and writing it back to the
+    /// config on a keystroke would edit a file nobody asked to edit.
+    fn toggle_split(&mut self, cx: &mut Context<Self>) {
+        let Some(diff) = self.diff() else {
+            return self.refuse("no diff to split", cx);
+        };
+        diff.update(cx, |view, cx| {
+            let on = !view.is_split();
+            view.set_split(on);
+            cx.notify();
+        });
+    }
+
     /// `cmd-p` — open the command palette.
     fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.enter_mode(Mode::Palette(TextBuffer::default(), 0), window, cx);
@@ -1983,6 +1999,7 @@ impl Render for Workspace {
                 this.sidebar_collapsed = !this.sidebar_collapsed;
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &ToggleSplit, _, cx| this.toggle_split(cx)))
             .on_action(cx.listener(|this, _: &OpenPalette, window, cx| {
                 this.open_palette(window, cx)
             }))
@@ -2585,6 +2602,39 @@ mod tests {
             first,
             "`N` came back"
         );
+    }
+
+    /// §8's side-by-side, through the real keymap.
+    ///
+    /// The property worth asserting is the one the module exists to protect:
+    /// splitting must not change how many rows there are, because the cursor,
+    /// the highlights and every comment anchor are indexed by row.
+    #[gpui::test]
+    fn backslash_splits_the_view_without_changing_the_row_count(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, cx) =
+            workspace_with_diff(cx, GitHub::new(FakeGh::new()), Vec::new());
+        let rows_before =
+            workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).rows().len());
+        assert!(!workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).is_split()));
+
+        cx.simulate_keystrokes("\\");
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |this, cx| {
+            let view = this.diff().unwrap();
+            let view = view.read(cx);
+            assert!(view.is_split(), "the view is split");
+            assert_eq!(
+                view.rows().len(),
+                rows_before,
+                "and the row model is untouched — anchors are indexed by row"
+            );
+        });
+
+        cx.simulate_keystrokes("\\");
+        assert!(!workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).is_split()));
     }
 
     /// §8's `Cmd-P`, end to end: the palette must actually run what it shows.

@@ -42,6 +42,7 @@ actions!(
         NextMatch,
         PrevMatch,
         OpenPalette,
+        ToggleSplit,
     ]
 );
 
@@ -128,6 +129,10 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // is exactly the reviewer who cannot get back to the Diff context to
         // ask for the list of them.
         KeyBinding::new("cmd-p", OpenPalette, None),
+        // `\` splits the view, the way it opens a second pane in a tiling
+        // window manager. Free in the Diff context, and near enough to the
+        // other layout key (⌘B) to feel related.
+        KeyBinding::new("\\", ToggleSplit, Some("Diff")),
     ]
 }
 
@@ -354,7 +359,7 @@ mod tests {
         let before = pairs.len();
         pairs.dedup();
         assert_eq!(before, pairs.len(), "a key is bound twice in one context");
-        assert_eq!(before, 39, "every action in the actions! set needs a binding");
+        assert_eq!(before, 40, "every action in the actions! set needs a binding");
     }
 
     #[test]

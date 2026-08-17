@@ -12,6 +12,7 @@ pub mod rail;
 pub mod residency;
 pub mod search;
 pub mod sidebar;
+pub mod split;
 pub mod submit;
 pub mod theme;
 pub mod suggest;
