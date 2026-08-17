@@ -1,9 +1,29 @@
 use diffident_diff::{DiffFile, LineKind, Row, parser, rows};
-use diffident_forge::gh::GhRunner;
-use diffident_forge::threads::{ReviewThread, review_threads};
+use diffident_forge::threads::ReviewThread;
 use diffident_forge::{Forge, Repo, gh::GhError, stack::stack_order};
 use diffident_highlight::{Highlights, rows::for_rows};
 use diffident_model::{LoadState, Review, ReviewId};
+
+/// The parsed diff, shared rather than owned by the view.
+///
+/// Written once by `load_review` and never mutated — the three vectors are
+/// index-parallel by construction (§3) and nothing may change one without the
+/// others. Behind an `Arc` so `Workspace` can read files and rows without
+/// borrowing the `DiffView` entity through a `Context`, which is what forced
+/// eighteen call sites to carry a `cx` they had no other use for.
+///
+/// **The `Arc` must be owned by the residency entry and nothing that outlives
+/// it.** Eviction is what bounds memory — a large diff is tens of MB (§10) —
+/// and a stray clone parked in a long-lived map would make the LRU decorative.
+pub struct ReviewData {
+    pub files: Vec<DiffFile>,
+    /// Index-parallel with what the diff list renders (§3).
+    pub rows: Vec<Row>,
+    /// Index-parallel with `rows`. Computed on the caller's background thread,
+    /// because it is by far the most expensive step — ~530ms on a 10k-row diff.
+    /// Doing it in `DiffView::new` froze the window for exactly that long.
+    pub highlights: Vec<Highlights>,
+}
 
 /// Everything one review needs to render, fetched and parsed.
 pub struct LoadedReview {
@@ -11,9 +31,7 @@ pub struct LoadedReview {
     /// a force-push between visits can be detected (§6, and Phase 5's session key).
     pub head_sha: String,
     pub title: String,
-    pub files: Vec<DiffFile>,
-    /// Index-parallel with what the diff list renders (§3).
-    pub rows: Vec<Row>,
+    pub data: std::sync::Arc<ReviewData>,
     /// Conversations already on the pull request (§7). Empty when nobody has
     /// reviewed it yet, which is not an error.
     pub threads: Vec<ReviewThread>,
@@ -25,10 +43,6 @@ pub struct LoadedReview {
     /// `pr diff` is working perfectly. Threads are supplementary; the diff is
     /// the point of opening the review.
     pub threads_error: Option<String>,
-    /// Index-parallel with `rows`. Computed here, on the caller's background
-    /// thread, because it is by far the most expensive step — ~530ms on a
-    /// 10k-row diff. Doing it in `DiffView::new` froze the window for that long.
-    pub highlights: Vec<Highlights>,
     pub added: u32,
     pub removed: u32,
 }
@@ -40,18 +54,17 @@ pub struct LoadedReview {
 /// run concurrently: `pr_detail` yields the head SHA, `pr_diff` the patch.
 /// Highlighting happens here too rather than in the view, so that the whole
 /// expensive path is off the foreground thread.
-pub fn load_review<F: Forge + Sync, R: GhRunner + Sync>(
+pub fn load_review<F: Forge + Sync + ?Sized>(
     forge: &F,
-    runner: &R,
     repo: &Repo,
     number: u32,
 ) -> Result<LoadedReview, GhError> {
     // Three independent calls, each most of a second. `Sync` is bounded on this
-    // function rather than on the traits: only this call site shares them
-    // across threads.
+    // function rather than on the trait: only this call site shares it across
+    // threads. `?Sized` so a caller holding `dyn Forge` can pass it directly.
     let (detail, text, threads) = std::thread::scope(|scope| {
         let diff = scope.spawn(|| forge.pr_diff(repo, number));
-        let thr = scope.spawn(|| review_threads(runner, repo, number));
+        let thr = scope.spawn(|| forge.review_threads(repo, number));
         let detail = forge.pr_detail(repo, number);
         (
             detail,
@@ -89,9 +102,11 @@ pub fn load_review<F: Forge + Sync, R: GhRunner + Sync>(
     Ok(LoadedReview {
         head_sha: detail.head_ref_oid,
         title: detail.title,
-        files,
-        rows,
-        highlights,
+        data: std::sync::Arc::new(ReviewData {
+            files,
+            rows,
+            highlights,
+        }),
         added,
         removed,
         threads,
@@ -100,7 +115,7 @@ pub fn load_review<F: Forge + Sync, R: GhRunner + Sync>(
 }
 
 /// List the repo's open PRs as rail-ready reviews, already in stack order.
-pub fn list_reviews<F: Forge>(forge: &F, repo: &Repo) -> Result<Vec<Review>, GhError> {
+pub fn list_reviews<F: Forge + ?Sized>(forge: &F, repo: &Repo) -> Result<Vec<Review>, GhError> {
     let prs = forge.list_prs(repo)?;
     let slug = repo.slug();
     Ok(stack_order(&prs)
@@ -150,10 +165,10 @@ mod tests {
             .with("pr diff 7 --repo o/r --color never", DIFF)
             .with("api graphql --input -", THREADS_JSON);
         let github = GitHub::new(gh);
-        let loaded = load_review(&github, github.runner(), &repo(), 7).unwrap();
+        let loaded = load_review(&github, &repo(), 7).unwrap();
         assert_eq!(loaded.head_sha, "abc");
-        assert_eq!(loaded.files.len(), 1);
-        assert!(!loaded.rows.is_empty());
+        assert_eq!(loaded.data.files.len(), 1);
+        assert!(!loaded.data.rows.is_empty());
     }
 
     #[test]
@@ -165,8 +180,8 @@ mod tests {
             .with("pr diff 7 --repo o/r --color never", DIFF)
             .with("api graphql --input -", THREADS_JSON);
         let github = GitHub::new(gh);
-        let loaded = load_review(&github, github.runner(), &repo(), 7).unwrap();
-        assert_eq!(loaded.highlights.len(), loaded.rows.len());
+        let loaded = load_review(&github, &repo(), 7).unwrap();
+        assert_eq!(loaded.data.highlights.len(), loaded.data.rows.len());
     }
 
     #[test]
@@ -176,7 +191,7 @@ mod tests {
             .with("pr diff 7 --repo o/r --color never", DIFF)
             .with("api graphql --input -", THREADS_JSON);
         let github = GitHub::new(gh);
-        load_review(&github, github.runner(), &repo(), 7).unwrap();
+        load_review(&github, &repo(), 7).unwrap();
         let mut calls = github.runner().calls();
         calls.sort();
         assert_eq!(
@@ -193,14 +208,14 @@ mod tests {
             .with("pr diff 7 --repo o/r --color never", DIFF)
             .with("api graphql --input -", THREADS_JSON);
         let github = GitHub::new(gh);
-        let loaded = load_review(&github, github.runner(), &repo(), 7).unwrap();
+        let loaded = load_review(&github, &repo(), 7).unwrap();
         assert_eq!((loaded.added, loaded.removed), (1, 1));
     }
 
     #[test]
     fn a_failed_fetch_surfaces_the_error_rather_than_an_empty_review() {
         let github = GitHub::new(FakeGh::new()); // nothing registered
-        assert!(load_review(&github, github.runner(), &repo(), 7).is_err());
+        assert!(load_review(&github, &repo(), 7).is_err());
     }
 
     #[test]
@@ -242,7 +257,7 @@ mod tests {
             .with("pr diff 7 --repo o/r --color never", DIFF)
             .with("api graphql --input -", THREADS_JSON);
         let github = GitHub::new(gh);
-        let loaded = load_review(&github, github.runner(), &repo(), 7).unwrap();
+        let loaded = load_review(&github, &repo(), 7).unwrap();
         assert_eq!(loaded.threads.len(), 1);
         assert_eq!(loaded.threads[0].comments[0].author, "octocat");
     }
@@ -257,8 +272,8 @@ mod tests {
             .with("pr diff 7 --repo o/r --color never", DIFF);
         // no graphql response registered -> the thread fetch fails
         let github = GitHub::new(gh);
-        let loaded = load_review(&github, github.runner(), &repo(), 7).expect("diff must survive");
-        assert_eq!(loaded.files.len(), 1, "the diff is still here");
+        let loaded = load_review(&github, &repo(), 7).expect("diff must survive");
+        assert_eq!(loaded.data.files.len(), 1, "the diff is still here");
         assert!(loaded.threads.is_empty());
     }
 
@@ -270,7 +285,7 @@ mod tests {
             .with(DETAIL_ARGS, DETAIL_JSON)
             .with("pr diff 7 --repo o/r --color never", DIFF);
         let github = GitHub::new(gh);
-        let loaded = load_review(&github, github.runner(), &repo(), 7).unwrap();
+        let loaded = load_review(&github, &repo(), 7).unwrap();
         assert!(loaded.threads_error.is_some(), "the reason must survive");
     }
 
@@ -281,7 +296,7 @@ mod tests {
             .with("pr diff 7 --repo o/r --color never", DIFF)
             .with("api graphql --input -", THREADS_JSON);
         let github = GitHub::new(gh);
-        let loaded = load_review(&github, github.runner(), &repo(), 7).unwrap();
+        let loaded = load_review(&github, &repo(), 7).unwrap();
         assert_eq!(loaded.threads.len(), 1);
         assert!(loaded.threads_error.is_none());
     }
@@ -291,7 +306,7 @@ mod tests {
         // Threads are supplementary; the diff is the point of opening a review.
         let gh = FakeGh::new().with(DETAIL_ARGS, DETAIL_JSON);
         let github = GitHub::new(gh);
-        assert!(load_review(&github, github.runner(), &repo(), 7).is_err());
+        assert!(load_review(&github, &repo(), 7).is_err());
     }
 
     #[test]
@@ -303,7 +318,7 @@ mod tests {
             .with("pr diff 7 --repo o/r --color never", DIFF)
             .with("api graphql --input -", empty);
         let github = GitHub::new(gh);
-        let loaded = load_review(&github, github.runner(), &repo(), 7).unwrap();
+        let loaded = load_review(&github, &repo(), 7).unwrap();
         assert!(loaded.threads.is_empty());
     }
 }

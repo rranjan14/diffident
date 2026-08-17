@@ -60,8 +60,12 @@ pub struct PrDetail {
 
 /// The one seam between diffident and a code host.
 ///
-/// Deliberately narrow: four methods covering the read path and review submission.
-/// Threads and commits arrive in later plans — do not add stubs for them now.
+/// **Every method must stay non-generic.** `dyn Forge` is what lets the UI hold
+/// one injected handle instead of hard-coding `GitHub<Gh>` at each call site,
+/// and a generic method would make the trait object-unsafe. The thread
+/// operations below were free functions taking a `GhRunner` for two phases,
+/// which forced callers to carry two handles to the same host — that is the
+/// mistake this rule exists to prevent recurring.
 pub trait Forge {
     fn list_prs(&self, repo: &Repo) -> Result<Vec<PrSummary>, gh::GhError>;
     fn pr_detail(&self, repo: &Repo, number: u32) -> Result<PrDetail, gh::GhError>;
@@ -74,4 +78,40 @@ pub trait Forge {
     /// whoever knows about comments, and this layer deliberately knows nothing
     /// about them — the same reason `pr_diff` returns a `String`.
     fn create_review(&self, repo: &Repo, number: u32, payload: &str) -> Result<(), gh::GhError>;
+
+    /// Every review thread on a pull request, following pagination.
+    fn review_threads(
+        &self,
+        repo: &Repo,
+        number: u32,
+    ) -> Result<Vec<threads::ReviewThread>, gh::GhError>;
+
+    /// Resolve or unresolve a thread. The thread's node id is the whole
+    /// address — a GraphQL global id already carries repo and PR.
+    fn set_resolved(&self, thread_id: &str, resolved: bool) -> Result<(), gh::GhError>;
+
+    /// Post a reply, returning the comment the host created so the caller can
+    /// render it without a second fetch.
+    fn reply(
+        &self,
+        thread_id: &str,
+        body: &str,
+    ) -> Result<threads::ThreadComment, gh::GhError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forge_stays_object_safe_so_the_ui_can_hold_one_injected_handle() {
+        // This is a compile-time assertion wearing a test's clothes: if anyone
+        // adds a generic method to `Forge`, the coercion below stops compiling
+        // and this test is where they find out why. Without `dyn Forge` the UI
+        // has to name a concrete `GitHub<Gh>` at every call site, which is what
+        // made `Workspace` untestable in the first place.
+        fn takes_a_dyn_forge(_: &(dyn Forge + Send + Sync)) {}
+        let forge = github::GitHub::new(gh::FakeGh::new());
+        takes_a_dyn_forge(&forge);
+    }
 }

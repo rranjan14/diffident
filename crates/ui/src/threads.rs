@@ -1,6 +1,6 @@
 //! Putting other people's review threads onto our row model (§7).
 
-use diffident_diff::{DiffFile, LineKind, Row};
+use diffident_diff::{DiffFile, Row};
 use diffident_forge::threads::ReviewThread;
 
 /// A thread, and where it landed.
@@ -57,28 +57,12 @@ fn row_for(thread: &ReviewThread, files: &[DiffFile], rows: &[Row]) -> Option<us
     }
     let line = thread.line?;
     rows.iter().position(|row| {
-        let Row::Line {
-            file_ix,
-            hunk_ix,
-            line_ix,
-        } = *row
-        else {
-            return false;
-        };
-        let Some(file) = files.get(file_ix) else {
-            return false;
-        };
-        if file.display_path() != thread.path {
-            return false;
-        }
-        let Some(diff_line) = file.hunks.get(hunk_ix).and_then(|h| h.lines.get(line_ix)) else {
-            return false;
-        };
-        if thread.on_old_side {
-            diff_line.kind != LineKind::Added && diff_line.old_lineno == Some(line)
-        } else {
-            diff_line.kind != LineKind::Removed && diff_line.new_lineno == Some(line)
-        }
+        row.file_ix()
+            .and_then(|ix| files.get(ix))
+            .is_some_and(|file| file.display_path() == thread.path)
+            && row
+                .line(files)
+                .is_some_and(|l| l.anchors(line, thread.on_old_side))
     })
 }
 
@@ -99,11 +83,6 @@ pub fn by_row<'a>(placed: &[Placed<'a>]) -> Vec<(usize, Vec<&'a ReviewThread>)> 
     out
 }
 
-/// How many threads could not be placed — the count the UI needs to tell the
-/// reviewer that conversations exist which it cannot show beside the code.
-pub fn unanchored(placed: &[Placed<'_>]) -> usize {
-    placed.iter().filter(|p| !p.is_anchored()).count()
-}
 /// The thread `delta` steps away, wrapping, with a stale cursor clamped first.
 ///
 /// Wrapping rather than clamping is deliberate and differs from diff
@@ -144,7 +123,7 @@ pub fn inline_groups(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diffident_diff::{parser::parse, rows::build_rows};
+    use diffident_diff::{LineKind, parser::parse, rows::build_rows};
     use diffident_forge::threads::{ReviewThread, ThreadComment};
 
     // a.rs: line 1 context, old line 2 removed, new line 2 added.
@@ -204,7 +183,6 @@ mod tests {
         let placed = place(&t, &files, &rows);
         assert_eq!(placed.len(), 1);
         assert_eq!(placed[0].row, None);
-        assert_eq!(unanchored(&placed), 1);
     }
 
     #[test]
@@ -247,7 +225,11 @@ mod tests {
         ];
         let placed = place(&t, &files, &rows);
         assert_eq!(placed.len(), 3);
-        assert_eq!(unanchored(&placed), 2);
+        assert_eq!(
+            placed.iter().filter(|p| !p.is_anchored()).count(),
+            2,
+            "two of the three have no line in this diff"
+        );
     }
 
     #[test]
@@ -351,7 +333,6 @@ mod tests {
         let (files, rows) = fixture();
         let placed = place(&[], &files, &rows);
         assert!(placed.is_empty());
-        assert_eq!(unanchored(&placed), 0);
     }
 
     #[test]

@@ -9,7 +9,7 @@
 //! Headless on purpose — no gpui here. The modals that present these choices
 //! are Phase 6b; everything in this file is decided and tested without a window.
 
-use diffident_diff::{DiffFile, FileKind, LineKind};
+use diffident_diff::{DiffFile, FileKind};
 use diffident_model::comment::{Comment, CommentScope, Lifecycle, Side};
 
 /// Why a draft cannot be sent as a line comment (§7).
@@ -133,10 +133,10 @@ fn classify(files: &[DiffFile], path: &str, anchors: &[(u32, Side)]) -> Option<U
 
 /// Whether `line` exists on `side` of this file's diff.
 fn line_present(file: &DiffFile, line: u32, side: Side) -> bool {
-    file.hunks.iter().flat_map(|h| &h.lines).any(|l| match side {
-        Side::Old => l.kind != LineKind::Added && l.old_lineno == Some(line),
-        Side::New => l.kind != LineKind::Removed && l.new_lineno == Some(line),
-    })
+    file.hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .any(|l| l.anchors(line, matches!(side, Side::Old)))
 }
 
 /// What the reviewer chose for a draft that would not map (§7).

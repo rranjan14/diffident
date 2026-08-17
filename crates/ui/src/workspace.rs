@@ -5,14 +5,15 @@
 
 use crate::diff_view::DiffView;
 use crate::file_list::{file_entries, reviewed_marker, status_glyph};
-use crate::loader::{LoadedReview, list_reviews, load_review};
+use crate::loader::{LoadedReview, ReviewData, list_reviews, load_review};
 use crate::navigate::*;
 use crate::rail::rail_row;
 use crate::composer::{Key, TextBuffer, key_action, scope_for_file, scope_for_line, scope_for_range};
 use crate::residency::Residency;
 use crate::submit::{Event, Resolution, Submission, preflight};
 use crate::theme::Theme;
-use diffident_forge::{Forge, Repo, gh::Gh, github::GitHub};
+use diffident_forge::{Forge, Repo};
+use std::sync::Arc;
 use diffident_model::{LoadState, Review};
 use diffident_model::comment::{Comment, CommentScope, Drafts, Side};
 use diffident_model::reviewed::Reviewed;
@@ -55,6 +56,14 @@ impl Mode {
 }
 
 pub struct Workspace {
+    /// The code host, injected rather than constructed.
+    ///
+    /// Every `gh`-touching path used to name `GitHub::new(Gh)` inline, which
+    /// meant no test could ever build a `Workspace` — the reason two guard
+    /// tests in this file resort to reading their own source. `Arc<dyn>`
+    /// because the background executor needs to move a handle into a task and
+    /// the trait is deliberately object-safe (see `Forge`'s doc).
+    forge: Arc<dyn Forge + Send + Sync>,
     repo: Repo,
     reviews: Vec<Review>,
     active: Option<usize>,
@@ -64,7 +73,12 @@ pub struct Workspace {
     /// keeping a few alive makes switching instant — the whole point of one
     /// window holding N reviews (§1). Bounded because a large diff is tens of
     /// MB (§10).
-    residency: Residency<Entity<DiffView>>,
+    /// The parsed diff and its view, evicted together.
+    ///
+    /// The `Arc<ReviewData>` lives *here* rather than in a map of its own so
+    /// that eviction still frees it — a large diff is tens of MB (§10), and a
+    /// clone parked anywhere longer-lived would make this LRU decorative.
+    residency: Residency<(Arc<ReviewData>, Entity<DiffView>)>,
     /// Which files the reviewer has marked read, per PR. Outlives the diffs in
     /// `residency` on purpose — evicting a diff must not forget your progress.
     reviewed: Reviewed,
@@ -72,12 +86,15 @@ pub struct Workspace {
     store: Store,
     /// Local draft comments, per PR (§7). Outlives the diffs in `residency`.
     drafts: Drafts,
-    /// Threads already on each PR, keyed by number. Outlives the diff in
-    /// `residency` for the same reason drafts do.
-    threads: std::collections::HashMap<u32, Vec<diffident_forge::threads::ReviewThread>>,
-    /// Why threads are missing for a review, when they are. Kept apart from
-    /// `error` (the rail's) because this one is about one pane, not the app.
-    threads_error: std::collections::HashMap<u32, String>,
+    /// Threads already on each PR, or why they are missing. Outlives the diff
+    /// in `residency` for the same reason drafts do.
+    ///
+    /// One map rather than two, because "no threads" and "we could not find
+    /// out" are one fact with two values, and splitting them meant every
+    /// reader had to consult the other map to know which it was looking at.
+    /// The error stays out of `error` (the rail's) because it is about one
+    /// pane, not the app.
+    threads: std::collections::HashMap<u32, Result<Vec<diffident_forge::threads::ReviewThread>, String>>,
     /// Which thread in the right-hand pane the reviewer is acting on.
     ///
     /// Not per-PR: switching reviews resets it, because carrying "thread 3"
@@ -125,8 +142,15 @@ struct Composing {
 }
 
 impl Workspace {
-    pub fn new(repo: Repo, open_pr: Option<u32>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        forge: Arc<dyn Forge + Send + Sync>,
+        repo: Repo,
+        open_pr: Option<u32>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut this = Self {
+            forge,
             repo: repo.clone(),
             reviews: Vec::new(),
             active: None,
@@ -135,7 +159,6 @@ impl Workspace {
             store: Store::new(default_root()),
             drafts: Drafts::new(),
             threads: std::collections::HashMap::new(),
-            threads_error: std::collections::HashMap::new(),
             thread_cursor: 0,
             mode: Mode::Browsing,
             visual_anchor: None,
@@ -154,10 +177,11 @@ impl Workspace {
     /// executor — a 400ms list call there freezes the window.
     fn refresh(&mut self, open_pr: Option<u32>, cx: &mut Context<Self>) {
         let repo = self.repo.clone();
+        let forge = self.forge.clone();
         cx.spawn(async move |this, cx| {
             let listed = cx
                 .background_executor()
-                .spawn(async move { list_reviews(&GitHub::new(Gh), &repo) })
+                .spawn(async move { list_reviews(forge.as_ref(), &repo) })
                 .await;
             this.update(cx, |this, cx| {
                 match listed {
@@ -231,7 +255,46 @@ impl Workspace {
 
     /// The diff for the active review, if it is resident.
     fn diff(&self) -> Option<Entity<DiffView>> {
-        self.residency.get(self.active_number()?).cloned()
+        self.residency
+            .get(self.active_number()?)
+            .map(|(_, view)| view.clone())
+    }
+
+    /// Say why a keystroke did nothing.
+    ///
+    /// The four comment keys all resolve the cursor to a comment scope, and a
+    /// header, hunk header, spacer or expander has none. Returning silently
+    /// there is indistinguishable from a broken key — and `p` already proved
+    /// the point by reporting one of its two failures and swallowing the
+    /// other, four lines apart.
+    fn refuse(&mut self, why: &str, cx: &mut Context<Self>) {
+        self.error = Some(why.to_string());
+        cx.notify();
+    }
+
+    /// The threads on `number`, or none when the fetch failed.
+    ///
+    /// Callers that act on a thread — select, resolve, reply — cannot do
+    /// anything useful with the failure, so this flattens it away rather than
+    /// making each of them decide. Only `render_threads`, which has to tell the
+    /// reviewer *why* the pane is empty, looks at the `Result` itself.
+    fn threads_of(&self, number: u32) -> Vec<diffident_forge::threads::ReviewThread> {
+        self.threads
+            .get(&number)
+            .and_then(|t| t.as_ref().ok())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The active review's parsed diff, without borrowing the view.
+    ///
+    /// This is the point of sharing it: reading files or rows no longer needs a
+    /// `Context` just to reach through a GPUI entity, so the callers below are
+    /// plain `&self` functions that a test can call directly.
+    fn data(&self) -> Option<&Arc<ReviewData>> {
+        self.residency
+            .get(self.active_number()?)
+            .map(|(data, _)| data)
     }
 
     /// Open a review, fetching its diff only if it is not already resident.
@@ -255,6 +318,7 @@ impl Workspace {
         // `apply` instead.
         self.sync_threads(cx);
         let repo = self.repo.clone();
+        let forge = self.forge.clone();
 
         // Already resident: promote to most-recently-used and skip the fetch
         // entirely. This is what makes switching between stacked PRs instant.
@@ -278,10 +342,7 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let loaded = cx
                 .background_executor()
-                .spawn(async move {
-                    let forge = GitHub::new(Gh);
-                    load_review(&forge, forge.runner(), &repo, number)
-                })
+                .spawn(async move { load_review(forge.as_ref(), &repo, number) })
                 .await;
             this.update(cx, |this, cx| {
                 match loaded {
@@ -315,6 +376,7 @@ impl Workspace {
                 added: loaded.added,
                 removed: loaded.removed,
                 files: loaded
+                    .data
                     .files
                     .iter()
                     .map(|f| (f.display_path().to_string(), f.content_hash()))
@@ -330,20 +392,24 @@ impl Workspace {
         self.drafts
             .restore(number, saved.comments_at(&loaded.head_sha).to_vec());
         self.reviewed.restore(number, saved.reviewed);
-        self.threads.insert(number, loaded.threads.clone());
-        match &loaded.threads_error {
-            Some(why) => self.threads_error.insert(number, why.clone()),
-            None => self.threads_error.remove(&number),
-        };
+        self.threads.insert(
+            number,
+            match &loaded.threads_error {
+                Some(why) => Err(why.clone()),
+                None => Ok(loaded.threads.clone()),
+            },
+        );
 
         let theme = self.theme.clone();
-        let row = self.residency.recall_cursor(number, loaded.rows.len());
+        let row = self.residency.recall_cursor(number, loaded.data.rows.len());
+        let data = loaded.data.clone();
         let view = cx.new(|_| {
-            let mut v = DiffView::new(loaded.files, loaded.rows, loaded.highlights, theme);
+            let mut v = DiffView::new(data, theme);
             v.scroll_to(row);
             v
         });
-        self.residency.admit(number, view, &loaded.head_sha);
+        self.residency
+            .admit(number, (loaded.data, view), &loaded.head_sha);
 
         // Keep whatever the reviewer is actually looking at at the
         // most-recently-used end. Open four reviews, click back to the first,
@@ -441,10 +507,10 @@ impl Workspace {
         let Some(number) = self.active_number() else {
             return;
         };
-        let Some((thread_id, on)) = self
-            .threads
-            .get(&number)
-            .and_then(|ts| crate::threads::selected(ts, self.thread_cursor))
+        let Some((thread_id, on)) = crate::threads::selected(
+            &self.threads_of(number),
+            self.thread_cursor,
+        )
             .map(|t| {
                 (
                     t.id.clone(),
@@ -513,8 +579,9 @@ impl Workspace {
             let view = diff.read(cx);
             scope_for_file(view.files(), view.rows(), view.cursor)
         };
-        if let Some(scope) = scope {
-            self.compose(scope, window, cx);
+        match scope {
+            Some(scope) => self.compose(scope, window, cx),
+            None => self.refuse("the cursor is not inside a file", cx),
         }
     }
 
@@ -538,14 +605,13 @@ impl Workspace {
                 crate::suggest::source_lines(view.files(), view.rows(), anchor, view.cursor),
             )
         };
-        let Some(scope) = scope else { return };
+        let Some(scope) = scope else {
+            return self.refuse("there is no line here to suggest a change to", cx);
+        };
         // Nothing on the new side to replace — a removed-lines-only selection.
         // GitHub would reject the suggestion, so it is better not to offer one.
         if lines.is_empty() {
-            self.error =
-                Some("a suggestion needs lines on the new side of the diff".into());
-            cx.notify();
-            return;
+            return self.refuse("a suggestion needs lines on the new side of the diff", cx);
         }
         self.compose_with(scope, Some(crate::suggest::fence(&lines)), window, cx);
     }
@@ -569,7 +635,9 @@ impl Workspace {
             scope_for_line(view.files(), view.rows(), view.cursor)
                 .or_else(|| scope_for_file(view.files(), view.rows(), view.cursor))
         };
-        let Some(here) = here else { return };
+        let Some(here) = here else {
+            return self.refuse("there is no draft here to delete", cx);
+        };
         let at_cursor: Vec<&Comment> = self
             .drafts
             .for_review(number)
@@ -707,10 +775,11 @@ impl Workspace {
             return;
         };
         let target = thread_id.clone();
+        let forge = self.forge.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { diffident_forge::threads::reply(&Gh, &thread_id, &body) })
+                .spawn(async move { forge.reply(&thread_id, &body) })
                 .await;
             this.update(cx, |this, cx| {
                 match result {
@@ -718,6 +787,7 @@ impl Workspace {
                         if let Some(t) = this
                             .threads
                             .get_mut(&number)
+                            .and_then(|ts| ts.as_mut().ok())
                             .and_then(|ts| ts.iter_mut().find(|t| t.id == target))
                         {
                             t.comments.push(comment);
@@ -853,26 +923,11 @@ impl Workspace {
                     )
                     .child(
                         div()
-                            .children(crate::suggest::segments(&c.body).into_iter().map(|seg| {
-                                match seg {
-                                    crate::suggest::Segment::Text(text) => div()
-                                        .text_color(if c.is_editable() {
-                                            theme.text
-                                        } else {
-                                            theme.text_muted
-                                        })
-                                        .child(SharedString::from(text)),
-                                    crate::suggest::Segment::Suggestion(text) => div()
-                                        .px_2()
-                                        .py_1()
-                                        .rounded_md()
-                                        .bg(theme.added_bg)
-                                        .border_l_2()
-                                        .border_color(theme.added)
-                                        .text_color(theme.added)
-                                        .child(SharedString::from(text)),
-                                }
-                            })),
+                            .child(crate::comment_view::comment_body(
+                                &c.body,
+                                theme,
+                                !c.is_editable(),
+                            )),
                     )
                     .into_any_element()
             })
@@ -891,11 +946,10 @@ impl Workspace {
         };
         // The notice must render even with no threads: an empty pane reads as
         // "nobody has reviewed this", which is a different and wrong statement.
-        let failed = self.threads_error.get(&number).cloned();
-        let threads = match self.threads.get(&number) {
-            Some(t) => t.as_slice(),
-            None if failed.is_none() => return Vec::new(),
-            None => &[],
+        let (threads, failed) = match self.threads.get(&number) {
+            Some(Ok(t)) => (t.as_slice(), None),
+            Some(Err(why)) => (&[][..], Some(why.clone())),
+            None => return Vec::new(),
         };
         let view = diff.read(cx);
         let placed = crate::threads::place(threads, view.files(), view.rows());
@@ -924,13 +978,7 @@ impl Workspace {
             let t = p.thread;
             // Only unanchored threads reach here, so there is no line to show.
             let where_ = format!("{} (not in this diff)", t.path);
-            let status = if t.is_resolved {
-                "resolved"
-            } else if t.is_outdated {
-                "outdated"
-            } else {
-                "open"
-            };
+            let status = crate::comment_view::status_label(t);
             out.push(
                 div()
                     .flex()
@@ -958,41 +1006,7 @@ impl Workspace {
                                     .child(SharedString::from(status.to_string())),
                             ),
                     )
-                    .children(t.comments.iter().map(|c| {
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(theme.text_muted)
-                                    .child(SharedString::from(if c.author.is_empty() {
-                                        "(deleted account)".to_string()
-                                    } else {
-                                        c.author.clone()
-                                    })),
-                            )
-                            .children(crate::suggest::segments(&c.body).into_iter().map(|seg| {
-                                match seg {
-                                    crate::suggest::Segment::Text(text) => div()
-                                        .text_color(theme.text_muted)
-                                        .child(SharedString::from(text)),
-                                    // A suggestion is a proposed edit, not
-                                    // prose. Rendering it as prose is how a
-                                    // reviewer misses that there is a change
-                                    // waiting to be accepted.
-                                    crate::suggest::Segment::Suggestion(text) => div()
-                                        .px_2()
-                                        .py_1()
-                                        .rounded_md()
-                                        .bg(theme.added_bg)
-                                        .border_l_2()
-                                        .border_color(theme.added)
-                                        .text_color(theme.added)
-                                        .child(SharedString::from(text)),
-                                }
-                            }))
-                    }))
+                    .children(crate::comment_view::thread_comments(t, theme, true))
                     .into_any_element(),
             );
         }
@@ -1133,18 +1147,20 @@ impl Workspace {
     /// thread list forever, and since the side pane stopped listing anchored
     /// threads that hid every conversation on them without a trace.
     fn sync_threads_for(&mut self, number: u32, cx: &mut Context<Self>) {
-        let Some(diff) = self.residency.get(number).cloned() else {
+        let Some((data, diff)) = self.residency.get(number).cloned() else {
             return;
         };
-        let threads = self.threads.get(&number).cloned().unwrap_or_default();
+        let threads = self.threads_of(number);
         // The cursor belongs to the review on screen; a background review has
         // no selection to draw.
         let selected = (self.active_number() == Some(number))
             .then(|| crate::threads::selected(&threads, self.thread_cursor))
             .flatten()
             .map(|t| t.id.clone());
+        // Grouping reads the diff from the shared handle, not from the view, so
+        // the only thing left inside the update is the write itself.
+        let groups = crate::threads::inline_groups(&threads, &data.files, &data.rows);
         diff.update(cx, |view, cx| {
-            let groups = crate::threads::inline_groups(&threads, view.files(), view.rows());
             view.set_threads(groups, selected);
             cx.notify();
         });
@@ -1162,7 +1178,7 @@ impl Workspace {
         let Some(number) = self.active_number() else {
             return;
         };
-        let count = self.threads.get(&number).map_or(0, Vec::len);
+        let count = self.threads_of(number).len();
         self.thread_cursor = crate::threads::step(count, self.thread_cursor, delta);
         self.sync_threads(cx);
         // Scroll the newly selected conversation into view. Since anchored
@@ -1171,7 +1187,7 @@ impl Workspace {
         // broken. An unanchored thread has no row to scroll to — it is listed
         // in the pane instead, so leave the diff where it is.
         let cursor = self.thread_cursor;
-        let threads = self.threads.get(&number).cloned().unwrap_or_default();
+        let threads = self.threads_of(number);
         if let Some(diff) = self.diff() {
             diff.update(cx, |view, cx| {
                 let placed = crate::threads::place(&threads, view.files(), view.rows());
@@ -1194,19 +1210,20 @@ impl Workspace {
         let Some(number) = self.active_number() else {
             return;
         };
-        let Some((id, want)) = self
-            .threads
-            .get(&number)
-            .and_then(|ts| crate::threads::selected(ts, self.thread_cursor))
-            .map(|t| (t.id.clone(), !t.is_resolved))
+        let Some((id, want)) = crate::threads::selected(
+            &self.threads_of(number),
+            self.thread_cursor,
+        )
+        .map(|t| (t.id.clone(), !t.is_resolved))
         else {
             return;
         };
         let target = id.clone();
+        let forge = self.forge.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { diffident_forge::threads::set_resolved(&Gh, &id, want) })
+                .spawn(async move { forge.set_resolved(&id, want) })
                 .await;
             this.update(cx, |this, cx| {
                 match result {
@@ -1216,6 +1233,7 @@ impl Workspace {
                         if let Some(t) = this
                             .threads
                             .get_mut(&number)
+                            .and_then(|ts| ts.as_mut().ok())
                             .and_then(|ts| ts.iter_mut().find(|t| t.id == target))
                         {
                             t.is_resolved = want;
@@ -1254,14 +1272,11 @@ impl Workspace {
     /// reviewer dismiss an empty resolver would be a dialog that says
     /// "nothing to decide".
     fn begin_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(number), Some(diff)) = (self.active_number(), self.diff()) else {
+        let (Some(number), Some(data)) = (self.active_number(), self.data().cloned()) else {
             return;
         };
         let drafts = self.drafts.for_review(number).to_vec();
-        let has_unmappable = {
-            let view = diff.read(cx);
-            !preflight(&drafts, view.files()).unmappable.is_empty()
-        };
+        let has_unmappable = !preflight(&drafts, &data.files).unmappable.is_empty();
         let submission = Submission::new(Event::Comment);
         let next = if has_unmappable {
             Mode::Resolving(submission)
@@ -1274,17 +1289,14 @@ impl Workspace {
     /// `space` in the resolver — flip the highlighted draft between being
     /// rescued into the body and being left behind.
     fn toggle_resolution(&mut self, cx: &mut Context<Self>) {
-        let (Some(number), Some(diff)) = (self.active_number(), self.diff()) else {
+        let (Some(number), Some(data)) = (self.active_number(), self.data().cloned()) else {
             return;
         };
         let drafts = self.drafts.for_review(number).to_vec();
-        let first_unmappable = {
-            let view = diff.read(cx);
-            preflight(&drafts, view.files())
-                .unmappable
-                .first()
-                .map(|(c, _)| c.id)
-        };
+        let first_unmappable = preflight(&drafts, &data.files)
+            .unmappable
+            .first()
+            .map(|(c, _)| c.id);
         if let (Mode::Resolving(sub), Some(id)) = (&mut self.mode, first_unmappable) {
             sub.toggle(id);
             cx.notify();
@@ -1327,15 +1339,14 @@ impl Workspace {
         let Mode::Confirming(sub) = &self.mode else {
             return;
         };
-        let (Some(number), Some(diff)) = (self.active_number(), self.diff()) else {
+        let (Some(number), Some(data)) = (self.active_number(), self.data().cloned()) else {
             return;
         };
         let sub = sub.clone();
         let drafts = self.drafts.for_review(number).to_vec();
 
         let (json, sent, landed) = {
-            let view = diff.read(cx);
-            let pre = preflight(&drafts, view.files());
+            let pre = preflight(&drafts, &data.files);
             if sub.check(&pre).is_err() {
                 return; // the confirm step is already showing why
             }
@@ -1360,10 +1371,11 @@ impl Workspace {
 
         self.leave_mode(window, cx);
         let repo = self.repo.clone();
+        let forge = self.forge.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { GitHub::new(Gh).create_review(&repo, number, &json) })
+                .spawn(async move { forge.create_review(&repo, number, &json) })
                 .await;
             this.update(cx, |this, cx| {
                 match result {
@@ -1385,13 +1397,12 @@ impl Workspace {
     }
 
     /// The resolver: every draft that will not map, why, and what happens to it.
-    fn render_resolver(&self, sub: &Submission, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_resolver(&self, sub: &Submission) -> impl IntoElement {
         let theme = self.theme.clone();
         let mut rows = Vec::new();
-        if let (Some(number), Some(diff)) = (self.active_number(), self.diff()) {
+        if let (Some(number), Some(data)) = (self.active_number(), self.data()) {
             let drafts = self.drafts.for_review(number).to_vec();
-            let view = diff.read(cx);
-            for (comment, reason) in preflight(&drafts, view.files()).unmappable {
+            for (comment, reason) in preflight(&drafts, &data.files).unmappable {
                 let kept = sub.resolution(comment.id) == Resolution::MoveToSummary;
                 rows.push(
                     div()
@@ -1725,13 +1736,6 @@ impl Render for Workspace {
                                 self.reviews.len()
                             ))),
                     )
-                    .children(self.error.clone().map(|e| {
-                        div()
-                            .px_3()
-                            .text_sm()
-                            .text_color(theme.removed)
-                            .child(SharedString::from(e))
-                    }))
                     .children(rail),
             )
             .children((!file_rows.is_empty()).then(|| {
@@ -1777,9 +1781,23 @@ impl Render for Workspace {
                     .flex_1()
                     .h_full()
                     .child(div().flex_1().min_h(px(0.)).child(diff))
+                    // Beneath the diff and above the composer, because that is
+                    // where the reviewer is looking when a write fails. In the
+                    // rail it sat beside the PR list, a pane away from the
+                    // action that produced it.
+                    .children(self.error.clone().map(|e| {
+                        div()
+                            .px_2()
+                            .py_1()
+                            .border_t_1()
+                            .border_color(theme.border)
+                            .text_sm()
+                            .text_color(theme.removed)
+                            .child(SharedString::from(e))
+                    }))
                     .children(match &self.mode {
                         Mode::Composing(c) => Some(self.render_composer(c, cx).into_any_element()),
-                        Mode::Resolving(s) => Some(self.render_resolver(s, cx).into_any_element()),
+                        Mode::Resolving(s) => Some(self.render_resolver(s).into_any_element()),
                         Mode::Confirming(s) => Some(self.render_confirm(s, cx).into_any_element()),
                         _ => None,
                     })
@@ -1812,8 +1830,197 @@ impl Render for Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{Placeholder, placeholder};
+    use super::{DiffView, Entity, Placeholder, Residency, Theme, Workspace, placeholder};
+    use gpui::AppContext as _;
+    use diffident_forge::gh::FakeGh;
+    use diffident_forge::github::GitHub;
+    use diffident_forge::threads::{ReviewThread, ThreadComment};
     use diffident_model::{LoadState, Review, ReviewId};
+    use std::sync::Arc;
+
+    /// One unresolved thread, the state the guarantee below is about.
+    fn open_thread() -> ReviewThread {
+        ReviewThread {
+            id: "PRRT_1".into(),
+            path: "a.rs".into(),
+            line: Some(1),
+            original_line: Some(1),
+            on_old_side: false,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![ThreadComment {
+                id: "PRRC_1".into(),
+                author: "octocat".into(),
+                body: "nit".into(),
+            }],
+        }
+    }
+
+    /// A key that resolves to nothing must say so.
+    ///
+    /// Pressing `c` on a file header or a spacer cannot produce a comment
+    /// scope, and returning silently is indistinguishable from a broken app —
+    /// the reviewer presses it again harder. `p` used to report one of its two
+    /// failures and swallow the other four lines away, which is how this got
+    /// noticed.
+    #[gpui::test]
+    fn a_comment_key_with_nowhere_to_land_says_why(cx: &mut gpui::TestAppContext) {
+        let forge = Arc::new(GitHub::new(FakeGh::new()));
+        let repo = diffident_forge::Repo {
+            owner: "o".into(),
+            name: "r".into(),
+        };
+        let window =
+            cx.add_window(|window, cx| Workspace::new(forge, repo, None, window, cx));
+
+        window
+            .update(cx, |this, _, cx| {
+                assert!(this.error.is_none(), "nothing has gone wrong yet");
+                this.refuse("there is no line here to comment on", cx);
+                assert_eq!(
+                    this.error.as_deref(),
+                    Some("there is no line here to comment on"),
+                    "the reviewer is told, rather than left pressing the key again"
+                );
+            })
+            .unwrap();
+    }
+
+    /// "Nobody has commented" and "we could not find out" are different
+    /// statements, and the reviewer acts differently on each. They used to be
+    /// two maps whose combination every reader had to reconstruct by hand;
+    /// now one value carries both, and a review nobody has fetched yet is a
+    /// third thing again — absent, not empty.
+    #[gpui::test]
+    fn an_unfetched_an_empty_and_a_failed_review_are_three_different_states(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let forge = Arc::new(GitHub::new(FakeGh::new()));
+        let repo = diffident_forge::Repo {
+            owner: "o".into(),
+            name: "r".into(),
+        };
+        let window =
+            cx.add_window(|window, cx| Workspace::new(forge, repo, None, window, cx));
+
+        window
+            .update(cx, |this, _, _| {
+                this.threads.insert(1, Ok(Vec::new()));
+                this.threads.insert(2, Err("rate limited".into()));
+
+                assert!(!this.threads.contains_key(&3), "never fetched");
+                assert!(
+                    this.threads.get(&1).is_some_and(|t| t.is_ok()),
+                    "fetched, and there is genuinely nothing there"
+                );
+                assert!(
+                    this.threads.get(&2).is_some_and(|t| t.is_err()),
+                    "fetched and failed — not the same as having none"
+                );
+
+                // Everything that acts on a thread sees the failure as "no
+                // threads to act on", so none of them has to handle it.
+                assert!(this.threads_of(2).is_empty());
+            })
+            .unwrap();
+    }
+
+    /// The LRU is what bounds memory: a large diff is tens of MB (§10), and
+    /// four stay resident. Sharing the parsed diff behind an `Arc` put a second
+    /// handle in play, so this pins the thing that would otherwise rot in
+    /// silence — evicting a review must actually release its diff, not just
+    /// drop one of two references to it. If a clone ever gets parked in a
+    /// longer-lived map, the app keeps every diff it has ever opened and
+    /// nothing else fails.
+    #[gpui::test]
+    fn evicting_a_review_releases_its_diff(cx: &mut gpui::TestAppContext) {
+        use crate::loader::ReviewData;
+        let mut residency: Residency<(Arc<ReviewData>, Entity<DiffView>)> =
+            Residency::new(super::RESIDENT);
+        let first = Arc::new(ReviewData {
+            files: Vec::new(),
+            rows: Vec::new(),
+            highlights: Vec::new(),
+        });
+        let watch = Arc::downgrade(&first);
+
+        for n in 0..=super::RESIDENT as u32 {
+            let data = if n == 0 {
+                first.clone()
+            } else {
+                Arc::new(ReviewData {
+                    files: Vec::new(),
+                    rows: Vec::new(),
+                    highlights: Vec::new(),
+                })
+            };
+            let view = cx.new(|_| DiffView::new(data.clone(), Theme::dark()));
+            residency.admit(n, (data, view), "head");
+        }
+        drop(first);
+        // gpui reclaims a dropped entity during `flush_effects`, and dropping
+        // the last handle does not by itself queue an effect — so force one.
+        // In the running app every frame does this; here nothing else would.
+        cx.update(|_| {});
+
+        assert!(
+            watch.upgrade().is_none(),
+            "the evicted review's diff is still alive — the residency bound is decorative"
+        );
+    }
+
+    /// §7: "a failed submit leaves everything at LocalDraft" — the same rule
+    /// governs a failed resolve, and until the forge could be injected there
+    /// was no way to test either. `FakeGh` with nothing registered fails every
+    /// call, which is exactly the network error this guards against.
+    #[gpui::test]
+    fn a_failed_resolve_leaves_the_thread_as_it_was(cx: &mut gpui::TestAppContext) {
+        let forge = Arc::new(GitHub::new(FakeGh::new()));
+        let repo = diffident_forge::Repo {
+            owner: "o".into(),
+            name: "r".into(),
+        };
+        let window = cx.add_window(|window, cx| {
+            let mut this = Workspace::new(forge, repo, None, window, cx);
+            // Stand the review up directly rather than driving a whole fetch:
+            // the guarantee under test is about what happens *after* the
+            // mutation fails, not about how the thread got here.
+            this.reviews.push(Review {
+                id: ReviewId {
+                    repo: "o/r".into(),
+                    number: 1,
+                },
+                title: "t".into(),
+                branch: "b".into(),
+                depth: 0,
+                is_draft: false,
+                head_sha: "abc".into(),
+                rebased: false,
+                state: LoadState::Idle,
+            });
+            this.active = Some(0);
+            this.threads.insert(1, Ok(vec![open_thread()]));
+            this
+        });
+
+        window
+            .update(cx, |this, _, cx| this.toggle_resolved(cx))
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |this, _, _| {
+                assert!(
+                    !this.threads_of(1)[0].is_resolved,
+                    "GitHub rejected the write, so the thread must still read open"
+                );
+                assert!(
+                    this.error.is_some(),
+                    "and the reviewer must be told, or they move on believing it resolved"
+                );
+            })
+            .unwrap();
+    }
 
     fn review(state: LoadState) -> Review {
         Review {

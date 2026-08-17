@@ -12,3 +12,11 @@ diffident-session.workspace = true
 gpui.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+
+# `test-support` is what makes `Workspace` testable at all: it gates gpui's
+# `TestAppContext` and the `#[gpui::test]` macro, and installs a no-op text
+# system so a test needs no window server and no fonts. Dev-only — resolver 3
+# keeps it out of the shipped binary. It does pull `proptest` into Cargo.lock;
+# that is an addition, not a bump, and the gpui pin itself does not move.
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

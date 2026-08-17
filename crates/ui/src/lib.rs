@@ -1,5 +1,6 @@
 //! The GPUI layer. The only crate besides the binary that links gpui.
 
+pub mod comment_view;
 pub mod composer;
 pub mod diff_view;
 pub mod file_list;
