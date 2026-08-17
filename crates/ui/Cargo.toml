@@ -10,3 +10,4 @@ diffident-forge.workspace = true
 diffident-highlight.workspace = true
 diffident-session.workspace = true
 gpui.workspace = true
+serde_json.workspace = true

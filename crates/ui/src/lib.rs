@@ -8,6 +8,7 @@ pub mod navigate;
 pub mod rail;
 pub mod residency;
 pub mod scrollbar;
+pub mod submit;
 pub mod theme;
 pub mod workspace;
 
