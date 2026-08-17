@@ -248,6 +248,12 @@ impl Workspace {
         }
         self.active = Some(ix);
         self.thread_cursor = 0;
+        // Before the early returns below, not after: both of them leave a
+        // resident view holding the *previous* review's selection, and one of
+        // them (`activate`) is the ordinary path back to an already-loaded
+        // review. A first load finds nothing resident here and is synced by
+        // `apply` instead.
+        self.sync_threads(cx);
         let repo = self.repo.clone();
 
         // Already resident: promote to most-recently-used and skip the fetch
@@ -349,6 +355,7 @@ impl Workspace {
         if let Some(active) = self.active_number() {
             self.residency.activate(active);
         }
+        self.sync_threads_for(number, cx);
     }
 
     fn move_cursor(&mut self, f: impl Fn(&[diffident_diff::Row], usize) -> usize, cx: &mut Context<Self>) {
@@ -716,6 +723,7 @@ impl Workspace {
                             t.comments.push(comment);
                         }
                         this.error = None;
+                        this.sync_threads(cx);
                     }
                     // The text is gone from the composer and was never a draft.
                     // Saying so is the only thing standing between the reviewer
@@ -891,16 +899,31 @@ impl Workspace {
         };
         let view = diff.read(cx);
         let placed = crate::threads::place(threads, view.files(), view.rows());
-        let lost = crate::threads::unanchored(&placed);
 
         let mut out: Vec<gpui::AnyElement> = Vec::new();
+        let mut heading_shown = false;
         for (ix, p) in placed.iter().enumerate() {
+            // Anchored threads render inline against their code (Task 3).
+            // Repeating them here would make the reviewer check two places for
+            // the same conversation.
+            if p.is_anchored() {
+                continue;
+            }
+            if !heading_shown {
+                out.push(
+                    div()
+                        .px_2()
+                        .text_sm()
+                        .text_color(theme.text_muted)
+                        .child("threads not in this diff")
+                        .into_any_element(),
+                );
+                heading_shown = true;
+            }
             let is_selected = ix == self.thread_cursor.min(placed.len().saturating_sub(1));
             let t = p.thread;
-            let where_ = match p.row {
-                Some(_) => format!("{}:{}", t.path, t.anchor_line().unwrap_or(0)),
-                None => format!("{} (not in this diff)", t.path),
-            };
+            // Only unanchored threads reach here, so there is no line to show.
+            let where_ = format!("{} (not in this diff)", t.path);
             let status = if t.is_resolved {
                 "resolved"
             } else if t.is_outdated {
@@ -926,11 +949,7 @@ impl Workspace {
                             .text_sm()
                             .child(
                                 div()
-                                    .text_color(if t.is_resolved || !p.is_anchored() {
-                                        theme.text_muted
-                                    } else {
-                                        theme.text
-                                    })
+                                    .text_color(theme.text_muted)
                                     .child(SharedString::from(where_)),
                             )
                             .child(
@@ -990,22 +1009,8 @@ impl Workspace {
             );
         }
 
-        if lost > 0 {
-            out.push(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_sm()
-                    .text_color(theme.text_muted)
-                    .child(SharedString::from(format!(
-                        "{lost} thread(s) refer to code not in this diff"
-                    )))
-                    .into_any_element(),
-            );
-        }
-
-        // The resolver modal lists its keys; this pane had none, and moving
-        // resolve off plain `space` made it unguessable without a hint.
+        // Shown whenever the review has any conversation at all — the keys act
+        // on threads drawn inline just as much as on the ones listed here.
         if !placed.is_empty() {
             out.push(
                 div()
@@ -1116,6 +1121,42 @@ impl Workspace {
         self.move_cursor(move |rows, ix| half_page(rows, ix, distance, down), cx);
     }
 
+    /// Push review `number`'s threads into *its own* diff view.
+    ///
+    /// **Call this from every place that changes `threads` or `thread_cursor`.**
+    /// The view holds its own copies, and a stale copy means the reviewer is
+    /// looking at a conversation that has already been resolved or replied to.
+    ///
+    /// Explicitly numbered rather than "whatever is active", because `apply`
+    /// deliberately lands results for reviews the reviewer has since switched
+    /// away from. Keying off the active review meant those diffs kept an empty
+    /// thread list forever, and since the side pane stopped listing anchored
+    /// threads that hid every conversation on them without a trace.
+    fn sync_threads_for(&mut self, number: u32, cx: &mut Context<Self>) {
+        let Some(diff) = self.residency.get(number).cloned() else {
+            return;
+        };
+        let threads = self.threads.get(&number).cloned().unwrap_or_default();
+        // The cursor belongs to the review on screen; a background review has
+        // no selection to draw.
+        let selected = (self.active_number() == Some(number))
+            .then(|| crate::threads::selected(&threads, self.thread_cursor))
+            .flatten()
+            .map(|t| t.id.clone());
+        diff.update(cx, |view, cx| {
+            let groups = crate::threads::inline_groups(&threads, view.files(), view.rows());
+            view.set_threads(groups, selected);
+            cx.notify();
+        });
+    }
+
+    /// [`Self::sync_threads_for`] the review on screen.
+    fn sync_threads(&mut self, cx: &mut Context<Self>) {
+        if let Some(number) = self.active_number() {
+            self.sync_threads_for(number, cx);
+        }
+    }
+
     /// `t` / `T` — move between the conversations on this PR.
     fn step_thread(&mut self, delta: isize, cx: &mut Context<Self>) {
         let Some(number) = self.active_number() else {
@@ -1123,6 +1164,23 @@ impl Workspace {
         };
         let count = self.threads.get(&number).map_or(0, Vec::len);
         self.thread_cursor = crate::threads::step(count, self.thread_cursor, delta);
+        self.sync_threads(cx);
+        // Scroll the newly selected conversation into view. Since anchored
+        // threads left the side pane, moving the selection onto a row that is
+        // off screen otherwise changes nothing visible and the key reads as
+        // broken. An unanchored thread has no row to scroll to — it is listed
+        // in the pane instead, so leave the diff where it is.
+        let cursor = self.thread_cursor;
+        let threads = self.threads.get(&number).cloned().unwrap_or_default();
+        if let Some(diff) = self.diff() {
+            diff.update(cx, |view, cx| {
+                let placed = crate::threads::place(&threads, view.files(), view.rows());
+                if let Some(row) = placed.get(cursor).and_then(|p| p.row) {
+                    view.scroll_to(row);
+                    cx.notify();
+                }
+            });
+        }
         cx.notify();
     }
 
@@ -1163,6 +1221,7 @@ impl Workspace {
                             t.is_resolved = want;
                         }
                         this.error = None;
+                        this.sync_threads(cx);
                     }
                     Err(e) => this.error = Some(format!("could not update the thread: {e}")),
                 }
@@ -1708,13 +1767,6 @@ impl Render for Workspace {
                                 .child("drafts")
                         }))
                         .children(drafts)
-                        .children((!threads.is_empty()).then(|| {
-                            div()
-                                .px_2()
-                                .text_sm()
-                                .text_color(theme.text_muted)
-                                .child("threads")
-                        }))
                         .children(threads)
                 })
             })
@@ -1902,5 +1954,50 @@ mod tests {
             "these actions are bound to keys but have no on_action handler, so \
              their keystrokes are silently swallowed: {unwired:?}"
         );
+    }
+
+    #[test]
+    fn every_mutation_of_threads_syncs_the_view() {
+        // `DiffView` holds its own copies of the threads. A site that moves
+        // `self.thread_cursor` without pushing the result into the view leaves
+        // the reviewer looking at a selection that is no longer there, and
+        // nothing fails.
+        //
+        // Structural rather than a threshold: each assignment must be followed
+        // by a sync somewhere in the same function. The count-based version of
+        // this test could never notice a *new* mutation site — which is exactly
+        // how `select` shipped with no sync on either of its early returns.
+        //
+        // What it still does not catch: a sync that pushes into the wrong
+        // review, or a mutation of `self.threads` rather than the cursor. Those
+        // are on the reviewer, which is why `sync_threads_for` says so in its
+        // own doc.
+        let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/workspace.rs"));
+        // Split so this test's own source does not match the needles it is
+        // searching for — the file it reads is the file it lives in.
+        let assignment = concat!("thread_", "cursor = ");
+        let sync = concat!("sync_", "threads");
+        // A `}` at four-space indent closes the enclosing `fn`, so this is the
+        // rest of the function the assignment sits in.
+        let sites: Vec<&str> = src
+            .match_indices(assignment)
+            .map(|(at, _)| {
+                let rest = &src[at..];
+                &rest[..rest.find("\n    }").unwrap_or(rest.len())]
+            })
+            .collect();
+        assert!(
+            sites.len() >= 2,
+            "expected at least `select` and `step_thread` to move the cursor, \
+             found {} assignments — did the field get renamed?",
+            sites.len()
+        );
+        for site in &sites {
+            assert!(
+                site.contains(sync),
+                "a `thread_cursor` assignment with no sync of the view after it \
+                 in the same function — the diff keeps the old selection:\n{site}"
+            );
+        }
     }
 }

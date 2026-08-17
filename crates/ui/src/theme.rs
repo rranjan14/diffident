@@ -19,8 +19,9 @@ pub struct Theme {
     pub scrollbar_thumb_hover: Rgba,
     pub font_family: &'static str,
     pub font_size: f32,
-    /// Every diff row is exactly this tall. `uniform_list` is fixed-height only
-    /// (§3), so this value and the row element's height must never diverge.
+    /// The height of one code line, and the uniform hint given to `list()`
+    /// before rows are measured (§3). Not every row's actual height: a row
+    /// carrying inline threads (§7) is deliberately taller than this.
     pub line_height: f32,
 }
 
