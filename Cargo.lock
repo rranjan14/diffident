@@ -1289,6 +1289,7 @@ dependencies = [
  "diffident-diff",
  "diffident-forge",
  "diffident-model",
+ "diffident-session",
  "diffident-ui",
  "gpui",
  "gpui_platform",
@@ -1337,6 +1338,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
+ "toml 0.8.23",
 ]
 
 [[package]]

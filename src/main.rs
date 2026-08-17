@@ -1,6 +1,7 @@
 //! Orchestrator: parse args, open the window, wire the views. Nothing else.
 
 use diffident_forge::{Repo, gh::Gh, github::GitHub};
+use diffident_session::config;
 use diffident_ui::{navigate, workspace::Workspace};
 use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 use gpui_platform::application;
@@ -55,6 +56,10 @@ fn main() {
         }
     };
 
+    // Read before the window opens, so the first frame is already the theme
+    // and width the user asked for rather than a default that flips.
+    let (config, config_error) = config::load(&config::default_path());
+
     application().run(move |cx: &mut App| {
         cx.bind_keys(navigate::key_bindings());
         let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
@@ -69,6 +74,8 @@ fn main() {
                         std::sync::Arc::new(GitHub::new(Gh)),
                         args.repo.clone(),
                         args.pr,
+                        config.clone(),
+                        config_error.clone(),
                         window,
                         cx,
                     )

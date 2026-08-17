@@ -58,7 +58,7 @@ pub fn comment_body(body: &str, theme: &Theme, muted: bool) -> impl IntoElement 
         .flex_col()
         .children(segments(body).into_iter().map(move |seg| match seg {
             Segment::Text(text) => div()
-                .font_family(theme.font_ui)
+                .font_family(theme.font_ui.clone())
                 .text_size(px(theme.ui_md))
                 .text_color(prose)
                 .child(SharedString::from(text)),
