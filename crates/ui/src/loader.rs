@@ -1,4 +1,6 @@
 use diffident_diff::{DiffFile, LineKind, Row, parser, rows};
+use diffident_forge::gh::GhRunner;
+use diffident_forge::threads::{ReviewThread, review_threads};
 use diffident_forge::{Forge, Repo, gh::GhError, stack::stack_order};
 use diffident_highlight::{Highlights, rows::for_rows};
 use diffident_model::{LoadState, Review, ReviewId};
@@ -12,6 +14,9 @@ pub struct LoadedReview {
     pub files: Vec<DiffFile>,
     /// Index-parallel with what the diff list renders (§3).
     pub rows: Vec<Row>,
+    /// Conversations already on the pull request (§7). Empty when nobody has
+    /// reviewed it yet, which is not an error.
+    pub threads: Vec<ReviewThread>,
     /// Index-parallel with `rows`. Computed here, on the caller's background
     /// thread, because it is by far the most expensive step — ~530ms on a
     /// 10k-row diff. Doing it in `DiffView::new` froze the window for that long.
@@ -27,20 +32,26 @@ pub struct LoadedReview {
 /// run concurrently: `pr_detail` yields the head SHA, `pr_diff` the patch.
 /// Highlighting happens here too rather than in the view, so that the whole
 /// expensive path is off the foreground thread.
-pub fn load_review<F: Forge + Sync>(
+pub fn load_review<F: Forge + Sync, R: GhRunner + Sync>(
     forge: &F,
+    runner: &R,
     repo: &Repo,
     number: u32,
 ) -> Result<LoadedReview, GhError> {
-    // `Sync` is bounded on this function rather than on `Forge` itself: only
-    // this call site needs to share a forge across threads, and putting it on
-    // the trait would constrain every future implementor for one caller's sake.
-    let (detail, text) = std::thread::scope(|scope| {
+    // Three independent calls, each most of a second. `Sync` is bounded on this
+    // function rather than on the traits: only this call site shares them
+    // across threads.
+    let (detail, text, threads) = std::thread::scope(|scope| {
         let diff = scope.spawn(|| forge.pr_diff(repo, number));
+        let thr = scope.spawn(|| review_threads(runner, repo, number));
         let detail = forge.pr_detail(repo, number);
-        (detail, diff.join().expect("pr_diff thread panicked"))
+        (
+            detail,
+            diff.join().expect("pr_diff thread panicked"),
+            thr.join().expect("threads thread panicked"),
+        )
     });
-    let (detail, text) = (detail?, text?);
+    let (detail, text, threads) = (detail?, text?, threads?);
     let files = parser::parse(&text);
     let rows = rows::build_rows(&files);
 
@@ -67,6 +78,7 @@ pub fn load_review<F: Forge + Sync>(
         highlights,
         added,
         removed,
+        threads,
     })
 }
 
@@ -118,8 +130,10 @@ mod tests {
     fn a_loaded_review_carries_its_parsed_files_rows_and_head_sha() {
         let gh = FakeGh::new()
             .with(DETAIL_ARGS, DETAIL_JSON)
-            .with("pr diff 7 --repo o/r --color never", DIFF);
-        let loaded = load_review(&GitHub::new(gh), &repo(), 7).unwrap();
+            .with("pr diff 7 --repo o/r --color never", DIFF)
+            .with("api graphql --input -", THREADS_JSON);
+        let github = GitHub::new(gh);
+        let loaded = load_review(&github, github.runner(), &repo(), 7).unwrap();
         assert_eq!(loaded.head_sha, "abc");
         assert_eq!(loaded.files.len(), 1);
         assert!(!loaded.rows.is_empty());
@@ -131,36 +145,45 @@ mod tests {
         // them, so a mismatch here paints every line the wrong colour.
         let gh = FakeGh::new()
             .with(DETAIL_ARGS, DETAIL_JSON)
-            .with("pr diff 7 --repo o/r --color never", DIFF);
-        let loaded = load_review(&GitHub::new(gh), &repo(), 7).unwrap();
+            .with("pr diff 7 --repo o/r --color never", DIFF)
+            .with("api graphql --input -", THREADS_JSON);
+        let github = GitHub::new(gh);
+        let loaded = load_review(&github, github.runner(), &repo(), 7).unwrap();
         assert_eq!(loaded.highlights.len(), loaded.rows.len());
     }
 
     #[test]
-    fn both_gh_calls_are_issued_even_though_they_run_concurrently() {
+    fn all_three_gh_calls_are_issued_even_though_they_run_concurrently() {
         let gh = FakeGh::new()
             .with(DETAIL_ARGS, DETAIL_JSON)
-            .with("pr diff 7 --repo o/r --color never", DIFF);
+            .with("pr diff 7 --repo o/r --color never", DIFF)
+            .with("api graphql --input -", THREADS_JSON);
         let github = GitHub::new(gh);
-        load_review(&github, &repo(), 7).unwrap();
+        load_review(&github, github.runner(), &repo(), 7).unwrap();
         let mut calls = github.runner().calls();
         calls.sort();
-        assert_eq!(calls.len(), 2, "one detail call and one diff call: {calls:?}");
+        assert_eq!(
+            calls.len(),
+            3,
+            "one detail call, one diff call, one threads call: {calls:?}"
+        );
     }
 
     #[test]
     fn added_and_removed_counts_come_from_the_parsed_diff() {
         let gh = FakeGh::new()
             .with(DETAIL_ARGS, DETAIL_JSON)
-            .with("pr diff 7 --repo o/r --color never", DIFF);
-        let loaded = load_review(&GitHub::new(gh), &repo(), 7).unwrap();
+            .with("pr diff 7 --repo o/r --color never", DIFF)
+            .with("api graphql --input -", THREADS_JSON);
+        let github = GitHub::new(gh);
+        let loaded = load_review(&github, github.runner(), &repo(), 7).unwrap();
         assert_eq!((loaded.added, loaded.removed), (1, 1));
     }
 
     #[test]
     fn a_failed_fetch_surfaces_the_error_rather_than_an_empty_review() {
-        let gh = FakeGh::new(); // nothing registered
-        assert!(load_review(&GitHub::new(gh), &repo(), 7).is_err());
+        let github = GitHub::new(FakeGh::new()); // nothing registered
+        assert!(load_review(&github, github.runner(), &repo(), 7).is_err());
     }
 
     #[test]
@@ -186,5 +209,37 @@ mod tests {
         let reviews = list_reviews(&GitHub::new(gh), &repo()).unwrap();
         assert_eq!(reviews[0].head_sha, "deadbeef");
         assert!(!reviews[0].rebased, "a first listing is never a rebase");
+    }
+
+    const THREADS_JSON: &str = r#"{"data":{"repository":{"pullRequest":{"reviewThreads":{
+      "pageInfo":{"hasNextPage":false,"endCursor":null},
+      "nodes":[{"id":"PRRT_1","isResolved":false,"isOutdated":false,"path":"a.rs",
+        "line":2,"originalLine":2,"diffSide":"RIGHT",
+        "comments":{"nodes":[{"id":"PRRC_1","author":{"login":"octocat"},"body":"nit"}]}}]
+      }}}}}"#;
+
+    #[test]
+    fn a_loaded_review_carries_the_threads_already_on_the_pr() {
+        let gh = FakeGh::new()
+            .with(DETAIL_ARGS, DETAIL_JSON)
+            .with("pr diff 7 --repo o/r --color never", DIFF)
+            .with("api graphql --input -", THREADS_JSON);
+        let github = GitHub::new(gh);
+        let loaded = load_review(&github, github.runner(), &repo(), 7).unwrap();
+        assert_eq!(loaded.threads.len(), 1);
+        assert_eq!(loaded.threads[0].comments[0].author, "octocat");
+    }
+
+    #[test]
+    fn a_pr_nobody_has_reviewed_yet_loads_with_no_threads() {
+        let empty = r#"{"data":{"repository":{"pullRequest":{"reviewThreads":{
+          "pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}"#;
+        let gh = FakeGh::new()
+            .with(DETAIL_ARGS, DETAIL_JSON)
+            .with("pr diff 7 --repo o/r --color never", DIFF)
+            .with("api graphql --input -", empty);
+        let github = GitHub::new(gh);
+        let loaded = load_review(&github, github.runner(), &repo(), 7).unwrap();
+        assert!(loaded.threads.is_empty());
     }
 }
