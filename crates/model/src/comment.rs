@@ -169,6 +169,20 @@ impl Drafts {
     pub fn restore(&mut self, review: u32, comments: Vec<Comment>) {
         self.by_review.insert(review, comments);
     }
+
+    /// Mark these drafts as having reached GitHub.
+    ///
+    /// Ids not present are ignored rather than reported: the caller computed
+    /// them from the same set a moment ago, and failing a whole submit because
+    /// one draft was deleted mid-flight would be worse than quietly skipping it.
+    pub fn mark(&mut self, review: u32, ids: &[Uuid], lifecycle: Lifecycle) {
+        let Some(list) = self.by_review.get_mut(&review) else {
+            return;
+        };
+        for comment in list.iter_mut().filter(|c| ids.contains(&c.id)) {
+            comment.lifecycle = lifecycle;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -316,5 +330,37 @@ mod draft_tests {
         let mut fresh = Drafts::new();
         fresh.restore(7, saved.clone());
         assert_eq!(fresh.for_review(7), saved.as_slice());
+    }
+
+    #[test]
+    fn marking_drafts_sent_makes_them_uneditable() {
+        let mut d = Drafts::new();
+        let c = Comment::new_review("sent");
+        let id = c.id;
+        d.add(7, c);
+        d.mark(7, &[id], Lifecycle::Submitted);
+        assert!(!d.for_review(7)[0].is_editable());
+    }
+
+    #[test]
+    fn marking_leaves_drafts_that_were_not_sent_alone() {
+        // The omitted ones must stay editable for a later review.
+        let mut d = Drafts::new();
+        let sent = Comment::new_review("sent");
+        let kept = Comment::new_review("kept");
+        let sent_id = sent.id;
+        d.add(7, sent);
+        d.add(7, kept);
+        d.mark(7, &[sent_id], Lifecycle::Submitted);
+        assert!(d.for_review(7).iter().any(|c| c.is_editable()));
+        assert!(d.for_review(7).iter().any(|c| !c.is_editable()));
+    }
+
+    #[test]
+    fn marking_an_id_that_is_gone_is_not_an_error() {
+        let mut d = Drafts::new();
+        d.add(7, Comment::new_review("here"));
+        d.mark(7, &[Uuid::new_v4()], Lifecycle::Submitted);
+        assert_eq!(d.count(7), 1);
     }
 }

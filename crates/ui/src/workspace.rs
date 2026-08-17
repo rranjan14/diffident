@@ -12,7 +12,7 @@ use crate::composer::{Key, TextBuffer, key_action, scope_for_file, scope_for_lin
 use crate::residency::Residency;
 use crate::submit::{Event, Resolution, Submission, preflight};
 use crate::theme::Theme;
-use diffident_forge::{Repo, gh::Gh, github::GitHub};
+use diffident_forge::{Forge, Repo, gh::Gh, github::GitHub};
 use diffident_model::{LoadState, Review};
 use diffident_model::comment::{Comment, CommentScope, Drafts, Side};
 use diffident_model::reviewed::Reviewed;
@@ -820,6 +820,75 @@ impl Workspace {
         }
     }
 
+    /// `cmd-enter` in the confirm step — post the review.
+    ///
+    /// The lifecycle change happens in the landing closure and nowhere else,
+    /// only on `Ok`. §9 requires that a failed submit leave every draft at
+    /// `LocalDraft`, and the only way to be sure of that is to have exactly one
+    /// place that can change it.
+    fn send_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Mode::Confirming(sub) = &self.mode else {
+            return;
+        };
+        let (Some(number), Some(diff)) = (self.active_number(), self.diff()) else {
+            return;
+        };
+        let sub = sub.clone();
+        let drafts = self.drafts.for_review(number).to_vec();
+
+        let (json, sent, landed, head) = {
+            let view = diff.read(cx);
+            let pre = preflight(&drafts, view.files());
+            if sub.check(&pre).is_err() {
+                return; // the confirm step is already showing why
+            }
+            // The head the diff was fetched at. §5: sending a different
+            // commit_id makes GitHub 422 when a strict subset of commits is in
+            // play.
+            let head = self
+                .reviews
+                .iter()
+                .find(|r| r.id.number == number)
+                .and_then(|r| match &r.state {
+                    LoadState::Ready { head_sha, .. } => Some(head_sha.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            (
+                sub.payload(&head, &pre).to_string(),
+                sub.sent_ids(&pre),
+                sub.landed(),
+                head,
+            )
+        };
+        let _ = head;
+
+        self.leave_mode(window, cx);
+        let repo = self.repo.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { GitHub::new(Gh).create_review(&repo, number, &json) })
+                .await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        this.drafts.mark(number, &sent, landed);
+                        this.persist(number);
+                        this.error = None;
+                    }
+                    // Nothing changes. The drafts are still local, still
+                    // editable, still on disk — the reviewer can fix whatever
+                    // GitHub objected to and try again.
+                    Err(e) => this.error = Some(format!("submit failed: {e}")),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// The resolver: every draft that will not map, why, and what happens to it.
     fn render_resolver(&self, sub: &Submission, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.theme.clone();
@@ -1128,6 +1197,7 @@ impl Render for Workspace {
                 this.advance_submit(window, cx)
             }))
             .on_action(cx.listener(|this, _: &CancelSubmit, window, cx| this.leave_mode(window, cx)))
+            .on_action(cx.listener(|this, _: &SendReview, window, cx| this.send_review(window, cx)))
             .flex()
             .size_full()
             .bg(theme.bg)
