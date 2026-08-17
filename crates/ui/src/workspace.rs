@@ -237,7 +237,10 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let loaded = cx
                 .background_executor()
-                .spawn(async move { load_review(&GitHub::new(Gh), &repo, number) })
+                .spawn(async move {
+                    let forge = GitHub::new(Gh);
+                    load_review(&forge, forge.runner(), &repo, number)
+                })
                 .await;
             this.update(cx, |this, cx| {
                 match loaded {
