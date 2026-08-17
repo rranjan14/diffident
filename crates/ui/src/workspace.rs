@@ -260,6 +260,18 @@ impl Workspace {
             .map(|(_, view)| view.clone())
     }
 
+    /// Say why a keystroke did nothing.
+    ///
+    /// The four comment keys all resolve the cursor to a comment scope, and a
+    /// header, hunk header, spacer or expander has none. Returning silently
+    /// there is indistinguishable from a broken key — and `p` already proved
+    /// the point by reporting one of its two failures and swallowing the
+    /// other, four lines apart.
+    fn refuse(&mut self, why: &str, cx: &mut Context<Self>) {
+        self.error = Some(why.to_string());
+        cx.notify();
+    }
+
     /// The threads on `number`, or none when the fetch failed.
     ///
     /// Callers that act on a thread — select, resolve, reply — cannot do
@@ -567,8 +579,9 @@ impl Workspace {
             let view = diff.read(cx);
             scope_for_file(view.files(), view.rows(), view.cursor)
         };
-        if let Some(scope) = scope {
-            self.compose(scope, window, cx);
+        match scope {
+            Some(scope) => self.compose(scope, window, cx),
+            None => self.refuse("the cursor is not inside a file", cx),
         }
     }
 
@@ -592,14 +605,13 @@ impl Workspace {
                 crate::suggest::source_lines(view.files(), view.rows(), anchor, view.cursor),
             )
         };
-        let Some(scope) = scope else { return };
+        let Some(scope) = scope else {
+            return self.refuse("there is no line here to suggest a change to", cx);
+        };
         // Nothing on the new side to replace — a removed-lines-only selection.
         // GitHub would reject the suggestion, so it is better not to offer one.
         if lines.is_empty() {
-            self.error =
-                Some("a suggestion needs lines on the new side of the diff".into());
-            cx.notify();
-            return;
+            return self.refuse("a suggestion needs lines on the new side of the diff", cx);
         }
         self.compose_with(scope, Some(crate::suggest::fence(&lines)), window, cx);
     }
@@ -623,7 +635,9 @@ impl Workspace {
             scope_for_line(view.files(), view.rows(), view.cursor)
                 .or_else(|| scope_for_file(view.files(), view.rows(), view.cursor))
         };
-        let Some(here) = here else { return };
+        let Some(here) = here else {
+            return self.refuse("there is no draft here to delete", cx);
+        };
         let at_cursor: Vec<&Comment> = self
             .drafts
             .for_review(number)
@@ -1722,13 +1736,6 @@ impl Render for Workspace {
                                 self.reviews.len()
                             ))),
                     )
-                    .children(self.error.clone().map(|e| {
-                        div()
-                            .px_3()
-                            .text_sm()
-                            .text_color(theme.removed)
-                            .child(SharedString::from(e))
-                    }))
                     .children(rail),
             )
             .children((!file_rows.is_empty()).then(|| {
@@ -1774,6 +1781,20 @@ impl Render for Workspace {
                     .flex_1()
                     .h_full()
                     .child(div().flex_1().min_h(px(0.)).child(diff))
+                    // Beneath the diff and above the composer, because that is
+                    // where the reviewer is looking when a write fails. In the
+                    // rail it sat beside the PR list, a pane away from the
+                    // action that produced it.
+                    .children(self.error.clone().map(|e| {
+                        div()
+                            .px_2()
+                            .py_1()
+                            .border_t_1()
+                            .border_color(theme.border)
+                            .text_sm()
+                            .text_color(theme.removed)
+                            .child(SharedString::from(e))
+                    }))
                     .children(match &self.mode {
                         Mode::Composing(c) => Some(self.render_composer(c, cx).into_any_element()),
                         Mode::Resolving(s) => Some(self.render_resolver(s).into_any_element()),
@@ -1833,6 +1854,36 @@ mod tests {
                 body: "nit".into(),
             }],
         }
+    }
+
+    /// A key that resolves to nothing must say so.
+    ///
+    /// Pressing `c` on a file header or a spacer cannot produce a comment
+    /// scope, and returning silently is indistinguishable from a broken app —
+    /// the reviewer presses it again harder. `p` used to report one of its two
+    /// failures and swallow the other four lines away, which is how this got
+    /// noticed.
+    #[gpui::test]
+    fn a_comment_key_with_nowhere_to_land_says_why(cx: &mut gpui::TestAppContext) {
+        let forge = Arc::new(GitHub::new(FakeGh::new()));
+        let repo = diffident_forge::Repo {
+            owner: "o".into(),
+            name: "r".into(),
+        };
+        let window =
+            cx.add_window(|window, cx| Workspace::new(forge, repo, None, window, cx));
+
+        window
+            .update(cx, |this, _, cx| {
+                assert!(this.error.is_none(), "nothing has gone wrong yet");
+                this.refuse("there is no line here to comment on", cx);
+                assert_eq!(
+                    this.error.as_deref(),
+                    Some("there is no line here to comment on"),
+                    "the reviewer is told, rather than left pressing the key again"
+                );
+            })
+            .unwrap();
     }
 
     /// "Nobody has commented" and "we could not find out" are different
