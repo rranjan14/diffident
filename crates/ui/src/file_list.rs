@@ -1,4 +1,6 @@
+use crate::theme::Theme;
 use diffident_diff::{DiffFile, FileStatus, LineKind, Row};
+use gpui::{IntoElement, ParentElement, SharedString, div, prelude::*, px};
 
 /// One row of the file panel.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +66,53 @@ pub fn status_glyph(status: &FileStatus) -> &'static str {
 /// filenames stay aligned in a column rather than jittering as you mark them.
 pub fn reviewed_marker(reviewed: bool) -> &'static str {
     if reviewed { "✓" } else { " " }
+}
+
+/// One file-panel row. The path elides in the middle so both ends stay visible.
+pub fn file_row(entry: &FileEntry, is_read: bool, theme: &Theme) -> impl IntoElement + use<> {
+    div()
+        .flex()
+        .justify_between()
+        .gap(px(theme.s2))
+        .px(px(theme.s2))
+        .py(px(theme.s1))
+        .text_size(px(theme.ui_sm))
+        .rounded_md()
+        .hover(|this| this.bg(theme.surface_raised))
+        .child(
+            div()
+                .flex()
+                .gap(px(theme.s1))
+                .text_color(theme.text_secondary)
+                .child(SharedString::from(format!(
+                    "{} {}",
+                    reviewed_marker(is_read),
+                    status_glyph(&entry.status),
+                )))
+                .child(
+                    div()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis_middle()
+                        .text_size(px(theme.ui_sm))
+                        .child(SharedString::from(entry.path.clone())),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(px(theme.s1))
+                .child(
+                    div()
+                        .text_color(theme.added_fg)
+                        .child(SharedString::from(format!("+{}", entry.added))),
+                )
+                .child(
+                    div()
+                        .text_color(theme.removed_fg)
+                        .child(SharedString::from(format!("-{}", entry.removed))),
+                ),
+        )
 }
 
 #[cfg(test)]

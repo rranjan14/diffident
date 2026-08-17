@@ -55,11 +55,24 @@ pub fn rail_row(
         .hover(|this| this.bg(theme.surface_raised))
         .child(
             div()
+                .truncate()
+                .text_size(px(theme.ui_md))
+                .text_color(if selected {
+                    theme.text_primary
+                } else {
+                    theme.text_secondary
+                })
+                .child(SharedString::from(review.title.clone())),
+        )
+        .child(
+            div()
+                .truncate()
                 .text_color(theme.text_primary)
                 .child(SharedString::from(format!("{connector}{}", review.branch))),
         )
         .child(
             div()
+                .truncate()
                 .text_sm()
                 .text_color(theme.text_secondary)
                 .child(SharedString::from(rail_label(review, unreviewed))),
