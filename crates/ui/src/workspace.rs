@@ -10,6 +10,7 @@ use crate::navigate::*;
 use crate::rail::rail_row;
 use crate::composer::{Key, TextBuffer, key_action, scope_for_file, scope_for_line, scope_for_range};
 use crate::residency::Residency;
+use crate::submit::{Event, Resolution, Submission, preflight};
 use crate::theme::Theme;
 use diffident_forge::{Repo, gh::Gh, github::GitHub};
 use diffident_model::{LoadState, Review};
@@ -25,6 +26,33 @@ use gpui::{
 /// How many diffs stay resident. Four covers a typical stack (§6) without
 /// holding an unbounded amount of parsed diff in memory (§10).
 const RESIDENT: usize = 4;
+
+/// What the window is currently doing.
+#[derive(Default)]
+enum Mode {
+    /// Reading the diff. Diff keys live here.
+    #[default]
+    Browsing,
+    /// Writing a comment.
+    Composing(Composing),
+    /// Choosing what happens to drafts that will not map onto the diff.
+    Resolving(Submission),
+    /// Choosing the review kind, and sending.
+    Confirming(Submission),
+}
+
+impl Mode {
+    /// The key context this mode listens in. `None` while a mode owns the
+    /// keyboard for raw text, so no action bindings fire underneath it.
+    fn key_context(&self) -> Option<&'static str> {
+        match self {
+            Mode::Browsing => Some("Diff"),
+            Mode::Composing(_) => None,
+            Mode::Resolving(_) => Some("Resolver"),
+            Mode::Confirming(_) => Some("Confirm"),
+        }
+    }
+}
 
 pub struct Workspace {
     repo: Repo,
@@ -44,8 +72,9 @@ pub struct Workspace {
     store: Store,
     /// Local draft comments, per PR (§7). Outlives the diffs in `residency`.
     drafts: Drafts,
-    /// The comment being written, if any.
-    composing: Option<Composing>,
+    /// What the window is doing. One value, so two full-window states cannot
+    /// both be active — which three separate `Option`s would eventually allow.
+    mode: Mode,
     /// Where a `v` visual selection began. `c` turns anchor..cursor into a
     /// range comment.
     visual_anchor: Option<usize>,
@@ -74,7 +103,7 @@ impl Workspace {
             reviewed: Reviewed::new(),
             store: Store::new(default_root()),
             drafts: Drafts::new(),
-            composing: None,
+            mode: Mode::Browsing,
             visual_anchor: None,
             composer_focus: cx.focus_handle(),
             theme: Theme::dark(),
@@ -325,15 +354,41 @@ impl Workspace {
             .iter()
             .find(|c| c.scope == scope && c.is_editable())
             .map(|c| c.body.clone());
-        self.composing = Some(Composing {
-            buffer: existing
-                .map(|b| TextBuffer::from_text(&b))
-                .unwrap_or_default(),
-            scope,
-        });
         self.visual_anchor = None;
-        self.composer_focus.focus(window, cx);
+        self.enter_mode(
+            Mode::Composing(Composing {
+                buffer: existing
+                    .map(|b| TextBuffer::from_text(&b))
+                    .unwrap_or_default(),
+                scope,
+            }),
+            window,
+            cx,
+        );
+    }
+
+    /// Switch modes, moving focus with the switch.
+    ///
+    /// **Every mode change goes through here.** GPUI dispatches actions along
+    /// the focus chain, so a mode that takes focus and never returns it leaves
+    /// focus on an element that no longer exists and silently kills every
+    /// binding in the app — which is exactly what Phase 5b shipped, with a
+    /// fully green test suite. Keeping the focus move welded to the mode
+    /// change is what stops that recurring.
+    fn enter_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        let takes_keyboard = matches!(mode, Mode::Composing(_));
+        self.mode = mode;
+        if takes_keyboard {
+            self.composer_focus.focus(window, cx);
+        } else {
+            self.focus.focus(window, cx);
+        }
         cx.notify();
+    }
+
+    /// Return to reading the diff.
+    fn leave_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.enter_mode(Mode::Browsing, window, cx);
     }
 
     /// `c` — line comment, or a range comment when a `v` selection is open.
@@ -404,7 +459,24 @@ impl Workspace {
     /// handle whose element has just been removed silently kills every diff
     /// binding — the app looks alive and answers no keys at all.
     fn composer_key(&mut self, key: &Key, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(composing) = self.composing.as_mut() else {
+        match key {
+            Key::Cancel => {
+                if matches!(self.mode, Mode::Composing(_)) {
+                    self.leave_mode(window, cx);
+                }
+                return;
+            }
+            Key::Save => {
+                if matches!(self.mode, Mode::Composing(_)) {
+                    self.save_draft();
+                    self.leave_mode(window, cx);
+                }
+                return;
+            }
+            Key::Ignore => return,
+            _ => {}
+        }
+        let Mode::Composing(composing) = &mut self.mode else {
             return;
         };
         match key {
@@ -418,15 +490,7 @@ impl Workspace {
             Key::Down => composing.buffer.down(),
             Key::Home => composing.buffer.home(),
             Key::End => composing.buffer.end(),
-            Key::Cancel => {
-                self.composing = None;
-                self.focus.focus(window, cx);
-            }
-            Key::Save => {
-                self.save_draft();
-                self.focus.focus(window, cx);
-            }
-            Key::Ignore => return,
+            Key::Cancel | Key::Save | Key::Ignore => return,
         }
         cx.notify();
     }
@@ -436,7 +500,7 @@ impl Workspace {
     /// A blank comment closes without saving rather than storing an empty
     /// draft the reviewer would then have to delete.
     fn save_draft(&mut self) {
-        let Some(composing) = self.composing.take() else {
+        let Mode::Composing(composing) = &self.mode else {
             return;
         };
         let Some(number) = self.active_number() else {
@@ -446,18 +510,19 @@ impl Workspace {
             return;
         }
         let body = composing.buffer.text();
+        let scope = composing.scope.clone();
         // Replace any draft already on this exact anchor — `compose` seeded the
         // buffer from it, so keeping both would duplicate the text.
         if let Some(old) = self
             .drafts
             .for_review(number)
             .iter()
-            .find(|c| c.scope == composing.scope && c.is_editable())
+            .find(|c| c.scope == scope && c.is_editable())
             .map(|c| c.id)
         {
             self.drafts.remove(number, old);
         }
-        let comment = match composing.scope {
+        let comment = match scope {
             CommentScope::Review => Comment::new_review(&body),
             CommentScope::File { ref path } => Comment::new_file(path, &body),
             CommentScope::Line {
@@ -685,6 +750,119 @@ impl Workspace {
         let next = (from + delta).rem_euclid(len) as usize;
         self.select(next, cx);
     }
+
+    /// `S` — start a submit.
+    ///
+    /// Goes straight to the confirm step when everything maps: making the
+    /// reviewer dismiss an empty resolver would be a dialog that says
+    /// "nothing to decide".
+    fn begin_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(number), Some(diff)) = (self.active_number(), self.diff()) else {
+            return;
+        };
+        let drafts = self.drafts.for_review(number).to_vec();
+        let has_unmappable = {
+            let view = diff.read(cx);
+            !preflight(&drafts, view.files()).unmappable.is_empty()
+        };
+        let submission = Submission::new(Event::Comment);
+        let next = if has_unmappable {
+            Mode::Resolving(submission)
+        } else {
+            Mode::Confirming(submission)
+        };
+        self.enter_mode(next, window, cx);
+    }
+
+    /// `space` in the resolver — flip the highlighted draft between being
+    /// rescued into the body and being left behind.
+    fn toggle_resolution(&mut self, cx: &mut Context<Self>) {
+        let (Some(number), Some(diff)) = (self.active_number(), self.diff()) else {
+            return;
+        };
+        let drafts = self.drafts.for_review(number).to_vec();
+        let first_unmappable = {
+            let view = diff.read(cx);
+            preflight(&drafts, view.files())
+                .unmappable
+                .first()
+                .map(|(c, _)| c.id)
+        };
+        if let (Mode::Resolving(sub), Some(id)) = (&mut self.mode, first_unmappable) {
+            sub.toggle(id);
+            cx.notify();
+        }
+    }
+
+    fn next_event(&mut self, cx: &mut Context<Self>) {
+        if let Mode::Confirming(sub) = &mut self.mode {
+            sub.event = match sub.event {
+                Event::Comment => Event::Approve,
+                Event::Approve => Event::RequestChanges,
+                Event::RequestChanges => Event::Draft,
+                Event::Draft => Event::Comment,
+            };
+            cx.notify();
+        }
+    }
+
+    /// The resolver: every draft that will not map, why, and what happens to it.
+    fn render_resolver(&self, sub: &Submission, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.theme.clone();
+        let mut rows = Vec::new();
+        if let (Some(number), Some(diff)) = (self.active_number(), self.diff()) {
+            let drafts = self.drafts.for_review(number).to_vec();
+            let view = diff.read(cx);
+            for (comment, reason) in preflight(&drafts, view.files()).unmappable {
+                let kept = sub.resolution(comment.id) == Resolution::MoveToSummary;
+                rows.push(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .px_2()
+                        .py_1()
+                        .child(
+                            div()
+                                .text_color(if kept { theme.added } else { theme.text_muted })
+                                .child(SharedString::from(format!(
+                                    "{} — {}",
+                                    if kept { "move to summary" } else { "omit" },
+                                    reason.reason()
+                                ))),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.text_muted)
+                                .child(SharedString::from(comment.body.clone())),
+                        ),
+                );
+            }
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .w_full()
+            .p_2()
+            .border_t_1()
+            .border_color(theme.border)
+            .bg(theme.header_bg)
+            .child(
+                div()
+                    .text_color(theme.text)
+                    .child("these comments no longer fit the diff"),
+            )
+            .children(rows)
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.text_muted)
+                    .child("space toggle · enter continue · esc cancel"),
+            )
+    }
 }
 
 
@@ -828,10 +1006,7 @@ impl Render for Workspace {
         }
 
         div()
-            // Dropped while composing, so `j` types a j instead of moving the
-            // cursor. Key contexts match along the whole focus chain, so one
-            // left on an ancestor would still fire the diff bindings.
-            .when(self.composing.is_none(), |this| this.key_context("Diff"))
+            .when_some(self.mode.key_context(), |this, ctx| this.key_context(ctx))
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &NextLine, _, cx| {
                 this.move_cursor(|_, ix| ix + 1, cx)
@@ -869,6 +1044,9 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &NextReview, _, cx| this.step_review(1, cx)))
             .on_action(cx.listener(|this, _: &PrevReview, _, cx| this.step_review(-1, cx)))
+            .on_action(cx.listener(|this, _: &Submit, window, cx| this.begin_submit(window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleResolution, _, cx| this.toggle_resolution(cx)))
+            .on_action(cx.listener(|this, _: &NextEvent, _, cx| this.next_event(cx)))
             .flex()
             .size_full()
             .bg(theme.bg)
@@ -946,11 +1124,11 @@ impl Render for Workspace {
                     .flex_1()
                     .h_full()
                     .child(div().flex_1().min_h(px(0.)).child(diff))
-                    .children(
-                        self.composing
-                            .as_ref()
-                            .map(|c| self.render_composer(c, cx).into_any_element()),
-                    )
+                    .children(match &self.mode {
+                        Mode::Composing(c) => Some(self.render_composer(c, cx).into_any_element()),
+                        Mode::Resolving(s) => Some(self.render_resolver(s, cx).into_any_element()),
+                        _ => None,
+                    })
                     .into_any_element(),
                 None => {
                     let active = self.active.and_then(|ix| self.reviews.get(ix));
