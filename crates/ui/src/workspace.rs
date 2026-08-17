@@ -909,26 +909,11 @@ impl Workspace {
                     )
                     .child(
                         div()
-                            .children(crate::suggest::segments(&c.body).into_iter().map(|seg| {
-                                match seg {
-                                    crate::suggest::Segment::Text(text) => div()
-                                        .text_color(if c.is_editable() {
-                                            theme.text
-                                        } else {
-                                            theme.text_muted
-                                        })
-                                        .child(SharedString::from(text)),
-                                    crate::suggest::Segment::Suggestion(text) => div()
-                                        .px_2()
-                                        .py_1()
-                                        .rounded_md()
-                                        .bg(theme.added_bg)
-                                        .border_l_2()
-                                        .border_color(theme.added)
-                                        .text_color(theme.added)
-                                        .child(SharedString::from(text)),
-                                }
-                            })),
+                            .child(crate::comment_view::comment_body(
+                                &c.body,
+                                theme,
+                                !c.is_editable(),
+                            )),
                     )
                     .into_any_element()
             })
@@ -979,13 +964,7 @@ impl Workspace {
             let t = p.thread;
             // Only unanchored threads reach here, so there is no line to show.
             let where_ = format!("{} (not in this diff)", t.path);
-            let status = if t.is_resolved {
-                "resolved"
-            } else if t.is_outdated {
-                "outdated"
-            } else {
-                "open"
-            };
+            let status = crate::comment_view::status_label(t);
             out.push(
                 div()
                     .flex()
@@ -1013,41 +992,7 @@ impl Workspace {
                                     .child(SharedString::from(status.to_string())),
                             ),
                     )
-                    .children(t.comments.iter().map(|c| {
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(theme.text_muted)
-                                    .child(SharedString::from(if c.author.is_empty() {
-                                        "(deleted account)".to_string()
-                                    } else {
-                                        c.author.clone()
-                                    })),
-                            )
-                            .children(crate::suggest::segments(&c.body).into_iter().map(|seg| {
-                                match seg {
-                                    crate::suggest::Segment::Text(text) => div()
-                                        .text_color(theme.text_muted)
-                                        .child(SharedString::from(text)),
-                                    // A suggestion is a proposed edit, not
-                                    // prose. Rendering it as prose is how a
-                                    // reviewer misses that there is a change
-                                    // waiting to be accepted.
-                                    crate::suggest::Segment::Suggestion(text) => div()
-                                        .px_2()
-                                        .py_1()
-                                        .rounded_md()
-                                        .bg(theme.added_bg)
-                                        .border_l_2()
-                                        .border_color(theme.added)
-                                        .text_color(theme.added)
-                                        .child(SharedString::from(text)),
-                                }
-                            }))
-                    }))
+                    .children(crate::comment_view::thread_comments(t, theme, true))
                     .into_any_element(),
             );
         }

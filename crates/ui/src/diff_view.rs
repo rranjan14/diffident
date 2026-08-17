@@ -258,14 +258,8 @@ impl DiffView {
     /// than as another line of it, and boxed so a long comment cannot be
     /// mistaken for the file's contents.
     fn render_inline_thread(&self, thread: &ReviewThread, theme: &Theme) -> impl IntoElement {
+        let status = crate::comment_view::status_label(thread);
         let is_selected = self.selected_thread.as_deref() == Some(thread.id.as_str());
-        let status = if thread.is_resolved {
-            "resolved"
-        } else if thread.is_outdated {
-            "outdated"
-        } else {
-            "open"
-        };
         div()
             .flex()
             .flex_col()
@@ -290,41 +284,11 @@ impl DiffView {
                     .text_color(theme.text_muted)
                     .child(SharedString::from(status.to_string())),
             )
-            .children(thread.comments.iter().map(|c| {
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.text_muted)
-                            .child(SharedString::from(if c.author.is_empty() {
-                                "(deleted account)".to_string()
-                            } else {
-                                c.author.clone()
-                            })),
-                    )
-                    .children(crate::suggest::segments(&c.body).into_iter().map(|seg| {
-                        match seg {
-                            crate::suggest::Segment::Text(text) => div()
-                                .text_color(if thread.is_resolved {
-                                    theme.text_muted
-                                } else {
-                                    theme.text
-                                })
-                                .child(SharedString::from(text)),
-                            crate::suggest::Segment::Suggestion(text) => div()
-                                .px_2()
-                                .py_1()
-                                .rounded_md()
-                                .bg(theme.added_bg)
-                                .border_l_2()
-                                .border_color(theme.added)
-                                .text_color(theme.added)
-                                .child(SharedString::from(text)),
-                        }
-                    }))
-            }))
+            .children(crate::comment_view::thread_comments(
+                thread,
+                theme,
+                thread.is_resolved,
+            ))
     }
 }
 
