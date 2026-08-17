@@ -23,3 +23,44 @@ pub fn section_header(label: &str, count: usize, theme: &Theme) -> impl IntoElem
         .child(SharedString::from(label.to_uppercase()))
         .child(SharedString::from(count.to_string()))
 }
+
+/// A 4px drag handle between the sidebar and the diff.
+///
+/// Hand-rolled: GPUI has no splitter primitive. `width` is written back through
+/// the closure rather than returned, because the drag continues across frames.
+pub fn divider<V: 'static>(
+    theme: &Theme,
+    entity: gpui::Entity<V>,
+    set_width: fn(&mut V, f32),
+) -> impl IntoElement {
+    div()
+        .id("sidebar-divider")
+        .w(px(4.))
+        .h_full()
+        .cursor_col_resize()
+        .bg(theme.border_subtle)
+        .hover(|s| s.bg(theme.accent))
+        .on_drag((), |_, _, _, cx| cx.new(|_| gpui::Empty))
+        .on_drag_move(move |ev: &gpui::DragMoveEvent<()>, _, cx| {
+            let x: f32 = ev.event.position.x.into();
+            entity.update(cx, |v, cx| {
+                set_width(v, x.clamp(200., 480.));
+                cx.notify();
+            });
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    /// `on_drag_move` only fires while `cx.active_drag` holds `T`. Split the
+    /// needle so this test does not match itself.
+    #[test]
+    fn divider_starts_a_unit_drag_so_on_drag_move_can_fire() {
+        let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/sidebar.rs"));
+        let start = concat!(".on", "_drag(");
+        assert!(
+            src.contains(start),
+            "divider must call on_drag so on_drag_move can fire"
+        );
+    }
+}
