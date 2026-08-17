@@ -40,6 +40,7 @@ pub fn divider<V: 'static>(
         .cursor_col_resize()
         .bg(theme.border_subtle)
         .hover(|s| s.bg(theme.accent))
+        .on_drag((), |_, _, _, cx| cx.new(|_| gpui::Empty))
         .on_drag_move(move |ev: &gpui::DragMoveEvent<()>, _, cx| {
             let x: f32 = ev.event.position.x.into();
             entity.update(cx, |v, cx| {
@@ -47,4 +48,19 @@ pub fn divider<V: 'static>(
                 cx.notify();
             });
         })
+}
+
+#[cfg(test)]
+mod tests {
+    /// `on_drag_move` only fires while `cx.active_drag` holds `T`. Split the
+    /// needle so this test does not match itself.
+    #[test]
+    fn divider_starts_a_unit_drag_so_on_drag_move_can_fire() {
+        let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/sidebar.rs"));
+        let start = concat!(".on", "_drag(");
+        assert!(
+            src.contains(start),
+            "divider must call on_drag so on_drag_move can fire"
+        );
+    }
 }
