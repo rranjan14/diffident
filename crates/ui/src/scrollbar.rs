@@ -1,6 +1,6 @@
 use crate::theme::Theme;
 use gpui::{
-    Bounds, Entity, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollHandle,
+    Bounds, Entity, ListState, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
     Stateful, canvas, div, point, prelude::*, px,
 };
 
@@ -44,13 +44,14 @@ pub fn thumb(viewport: Pixels, content: Pixels, scroll_top: Pixels) -> Option<Th
 pub fn scrollbar<V: 'static>(
     track: Bounds<Pixels>,
     content_height: Pixels,
-    scroll: ScrollHandle,
+    scroll: ListState,
     theme: &Theme,
     entity: Entity<V>,
     drag_offset: fn(&mut V) -> &mut Option<Pixels>,
 ) -> Stateful<gpui::Div> {
     let viewport = track.size.height;
-    let Some(t) = thumb(viewport, content_height, -scroll.offset().y) else {
+    let Some(t) = thumb(viewport, content_height, -scroll.scroll_px_offset_for_scrollbar().y)
+    else {
         return div().id("scrollbar");
     };
 
@@ -66,12 +67,14 @@ pub fn scrollbar<V: 'static>(
         .rounded_full()
         .child(
             canvas(|_, _, _| (), move |thumb_bounds, _, window, _| {
+                let (scroll_down, scroll_up) = (scroll.clone(), scroll.clone());
                 window.on_mouse_event({
                     let entity = entity.clone();
                     move |ev: &MouseDownEvent, _, _, cx| {
                         if !thumb_bounds.contains(&ev.position) {
                             return;
                         }
+                        scroll_down.scrollbar_drag_started();
                         entity.update(cx, |v, _| {
                             *drag_offset(v) = Some(ev.position.y - thumb_bounds.origin.y);
                         });
@@ -80,6 +83,7 @@ pub fn scrollbar<V: 'static>(
                 window.on_mouse_event({
                     let entity = entity.clone();
                     move |_: &MouseUpEvent, _, _, cx| {
+                        scroll_up.scrollbar_drag_ended();
                         entity.update(cx, |v, _| *drag_offset(v) = None);
                     }
                 });
@@ -93,7 +97,10 @@ pub fn scrollbar<V: 'static>(
                     let progress = ((ev.position.y - track.origin.y - grab)
                         / (viewport - t.height))
                         .clamp(0., 1.);
-                    scroll.set_offset(point(px(0.), -((content_height - viewport) * progress)));
+                    scroll.set_offset_from_scrollbar(point(
+                        px(0.),
+                        -(scroll.max_offset_for_scrollbar().y * progress),
+                    ));
                     cx.notify(entity.entity_id());
                 });
             })

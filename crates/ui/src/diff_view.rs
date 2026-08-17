@@ -3,8 +3,8 @@ use crate::theme::Theme;
 use diffident_diff::{DiffFile, LineKind, Row};
 use diffident_highlight::Highlights;
 use gpui::{
-    Bounds, Context, HighlightStyle, IntoElement, ParentElement, Pixels, Render, SharedString,
-    StyledText, UniformListScrollHandle, Window, div, prelude::*, px, rgb, uniform_list,
+    Bounds, Context, HighlightStyle, IntoElement, ListAlignment, ListState, ParentElement, Pixels,
+    Render, SharedString, StyledText, Window, div, list, prelude::*, px, rgb,
 };
 use std::ops::Range;
 
@@ -18,7 +18,8 @@ pub struct DiffView {
     files: Vec<DiffFile>,
     rows: Vec<Row>,
     highlights: Vec<Highlights>,
-    scroll: UniformListScrollHandle,
+    /// The list's own state. Owns scroll position and per-row measurements.
+    list: ListState,
     theme: Theme,
     /// Where inside the scrollbar thumb the pointer grabbed. Owned solely by
     /// the scrollbar element.
@@ -34,11 +35,19 @@ impl DiffView {
     /// takes ~530ms, which froze the window for exactly that long.
     pub fn new(files: Vec<DiffFile>, rows: Vec<Row>, highlights: Vec<Highlights>, theme: Theme) -> Self {
         debug_assert_eq!(highlights.len(), rows.len(), "highlights must be row-parallel");
+        let rows_len = rows.len();
+        let line_height = theme.line_height;
         Self {
             files,
             rows,
             highlights,
-            scroll: UniformListScrollHandle::new(),
+            // A uniform height *hint*, not a constraint: every row starts out
+            // assumed to be one line tall, and real heights replace the hint as
+            // rows are measured. `measure_all()` would instead lay out every
+            // row up front — on a 10k-row diff that is the same class of
+            // mistake as computing highlights on the foreground thread.
+            list: ListState::new(rows_len, ListAlignment::Top, px(line_height * 20.))
+                .with_uniform_item_height(px(line_height)),
             theme,
             drag_offset: None,
             cursor: 0,
@@ -54,12 +63,17 @@ impl DiffView {
     ///
     /// Zero-sized before the first layout. Every caller must tolerate that.
     fn viewport(&self) -> Bounds<Pixels> {
-        self.scroll.0.borrow().base_handle.bounds()
+        self.list.viewport_bounds()
     }
 
-    /// Total height of all rows. Exact, because `uniform_list` is fixed-height.
+    /// Total height of all rows, as far as the list has measured them.
+    ///
+    /// No longer `rows * line_height`: once threads render inline some rows are
+    /// much taller. The list tracks the real total, using the uniform hint for
+    /// rows it has not measured yet, so this is exact from the first frame for
+    /// a diff with no threads and converges as thread rows are measured.
     fn content_height(&self) -> Pixels {
-        px(self.rows.len() as f32 * self.theme.line_height)
+        self.viewport().size.height + self.list.max_offset_for_scrollbar().y
     }
 
     pub fn rows(&self) -> &[Row] {
@@ -73,8 +87,7 @@ impl DiffView {
     /// Scroll so `ix` is visible. Used by the file panel and by navigation.
     pub fn scroll_to(&mut self, ix: usize) {
         self.cursor = ix.min(self.rows.len().saturating_sub(1));
-        self.scroll
-            .scroll_to_item(self.cursor, gpui::ScrollStrategy::Top);
+        self.list.scroll_to_reveal_item(self.cursor);
     }
 
     /// How many rows `ctrl-d` moves: half a screenful.
@@ -90,6 +103,7 @@ impl DiffView {
         match self.rows[ix] {
             Row::FileHeader { file_ix } => div()
                 .px_2()
+                .h(px(theme.line_height))
                 .bg(theme.header_bg)
                 .text_color(theme.text)
                 .child(SharedString::from(
@@ -100,6 +114,7 @@ impl DiffView {
                 let h = &self.files[file_ix].hunks[hunk_ix];
                 div()
                     .px_2()
+                    .h(px(theme.line_height))
                     .text_color(theme.text_muted)
                     .child(SharedString::from(format!(
                         "@@ -{},{} +{},{} @@ {}",
@@ -155,6 +170,7 @@ impl DiffView {
             }
             Row::Expander { hidden, .. } => div()
                 .px_2()
+                .h(px(theme.line_height))
                 .bg(theme.header_bg)
                 .text_color(theme.text_muted)
                 .child(match hidden {
@@ -172,7 +188,7 @@ impl Render for DiffView {
         let bar = scrollbar(
             self.viewport(),
             self.content_height(),
-            self.scroll.0.borrow().base_handle.clone(),
+            self.list.clone(),
             &self.theme,
             cx.entity(),
             |v: &mut Self| &mut v.drag_offset,
@@ -183,17 +199,13 @@ impl Render for DiffView {
             .size_full()
             .bg(self.theme.bg)
             .child(
-                uniform_list(
-                    "diff",
-                    self.rows.len(),
-                    cx.processor(|this, range: Range<usize>, _window, _cx| {
+                list(
+                    self.list.clone(),
+                    cx.processor(|this, ix: usize, _window, _cx| {
                         let theme = this.theme.clone();
-                        range
-                            .map(|ix| this.render_row(ix, &theme))
-                            .collect::<Vec<_>>()
+                        this.render_row(ix, &theme).into_any_element()
                     }),
                 )
-                .track_scroll(&self.scroll)
                 .size_full(),
             )
             .child(bar)
@@ -227,9 +239,11 @@ mod tests {
     }
 
     #[test]
-    fn content_height_matches_the_row_count_times_the_line_height() {
-        // The scrollbar divides by this; if it disagrees with what
-        // uniform_list actually lays out, the thumb is the wrong size.
+    fn an_unmeasured_view_reports_one_line_per_row() {
+        // Before layout every row still carries the uniform height hint, so the
+        // total is exact. Once threads render inline this stops being the rule
+        // and becomes just the starting point — the list replaces each hint
+        // with a real measurement as the row is drawn.
         let files = parse(RUST);
         let rows = build_rows(&files);
         let theme = Theme::dark();
