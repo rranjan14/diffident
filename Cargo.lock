@@ -1341,6 +1341,7 @@ dependencies = [
  "diffident-session",
  "gpui",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

@@ -10,7 +10,7 @@
 //! are Phase 6b; everything in this file is decided and tested without a window.
 
 use diffident_diff::{DiffFile, FileKind, LineKind};
-use diffident_model::comment::{Comment, CommentScope, Side};
+use diffident_model::comment::{Comment, CommentScope, Lifecycle, Side};
 
 /// Why a draft cannot be sent as a line comment (§7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -305,6 +305,215 @@ fn api_side(side: Side) -> &'static str {
     match side {
         Side::Old => "LEFT",
         Side::New => "RIGHT",
+    }
+}
+
+/// A submit in progress: what preflight found, plus what the reviewer chose.
+///
+/// Separate from `Preflight` because that is a fact about the diff while this
+/// is a set of decisions about it. Keeping the decisions in a plain struct is
+/// what lets the whole submit be assembled and checked before any modal exists.
+#[derive(Debug, Clone)]
+pub struct Submission {
+    /// What the reviewer typed as the review body, on top of any review-level
+    /// drafts they already had.
+    pub summary: String,
+    pub event: Event,
+    /// Only the drafts the reviewer changed their mind about. Anything absent
+    /// takes `Resolution::default()`, so the safe choice needs no interaction.
+    choices: std::collections::HashMap<uuid::Uuid, Resolution>,
+}
+
+impl Submission {
+    pub fn new(event: Event) -> Self {
+        Self {
+            summary: String::new(),
+            event,
+            choices: std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn resolution(&self, id: uuid::Uuid) -> Resolution {
+        self.choices.get(&id).copied().unwrap_or_default()
+    }
+
+    /// Flip one unmappable draft between being rescued and being dropped.
+    pub fn toggle(&mut self, id: uuid::Uuid) {
+        let next = match self.resolution(id) {
+            Resolution::MoveToSummary => Resolution::Omit,
+            Resolution::Omit => Resolution::MoveToSummary,
+        };
+        self.choices.insert(id, next);
+    }
+
+    /// The unmappable drafts being rescued into the body.
+    pub fn moved<'a>(&self, pre: &Preflight<'a>) -> Vec<&'a Comment> {
+        pre.unmappable
+            .iter()
+            .filter(|(c, _)| self.resolution(c.id) == Resolution::MoveToSummary)
+            .map(|(c, _)| *c)
+            .collect()
+    }
+
+    /// The full review body: review-level drafts, the reviewer's summary, and
+    /// anything rescued under `## Unplaced comments`.
+    pub fn body(&self, pre: &Preflight) -> String {
+        let mut parts: Vec<String> = pre
+            .summary
+            .iter()
+            .map(|c| c.body.trim().to_string())
+            .filter(|b| !b.is_empty())
+            .collect();
+        if !self.summary.trim().is_empty() {
+            parts.push(self.summary.trim().to_string());
+        }
+        let typed = parts.join("\n\n");
+        let moved = self.moved(pre);
+        if moved.is_empty() {
+            return typed;
+        }
+        // Reuse the same assembly as review_body so the heading and per-anchor
+        // formatting cannot drift between the two paths.
+        let placeholder = Comment::new_review(&typed);
+        if typed.is_empty() {
+            review_body(&[], &moved)
+        } else {
+            review_body(&[&placeholder], &moved)
+        }
+    }
+
+    /// Whether this submit may be sent (§7).
+    pub fn check(&self, pre: &Preflight) -> Result<(), Refused> {
+        check(self.event, &self.body(pre), pre.mappable.len())
+    }
+
+    /// The create-review JSON.
+    pub fn payload(&self, commit_id: &str, pre: &Preflight) -> serde_json::Value {
+        payload(commit_id, &self.body(pre), self.event, &pre.mappable)
+    }
+
+    /// The drafts this submit actually sends, and which therefore change
+    /// lifecycle when it succeeds.
+    ///
+    /// Omitted drafts are **not** included: they were deliberately held back
+    /// and stay editable so the reviewer can send them in a later review.
+    pub fn sent_ids(&self, pre: &Preflight) -> Vec<uuid::Uuid> {
+        pre.summary
+            .iter()
+            .chain(pre.mappable.iter())
+            .map(|c| c.id)
+            .chain(self.moved(pre).iter().map(|c| c.id))
+            .collect()
+    }
+
+    /// What a sent draft becomes once GitHub has it.
+    ///
+    /// A pending review leaves them as pushed drafts — GitHub has them but
+    /// nobody can see them yet, so they are neither local nor published.
+    pub fn landed(&self) -> Lifecycle {
+        match self.event {
+            Event::Draft => Lifecycle::PushedDraft,
+            _ => Lifecycle::Submitted,
+        }
+    }
+}
+
+#[cfg(test)]
+mod submission_tests {
+    use super::*;
+    use diffident_diff::parser::parse;
+
+    const DIFF: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n";
+
+    fn drafts() -> Vec<Comment> {
+        vec![
+            Comment::new_review("overall fine"),
+            Comment::new_line("a.rs", 2, Side::New, "mappable nit"),
+            Comment::new_file("a.rs", "file note"), // unmappable
+        ]
+    }
+
+    #[test]
+    fn an_unmappable_draft_is_rescued_by_default() {
+        // Silently losing a written comment is the worse failure, so the safe
+        // choice needs no interaction.
+        let d = drafts();
+        let pre = preflight(&d, &parse(DIFF));
+        let s = Submission::new(Event::Comment);
+        assert_eq!(s.moved(&pre).len(), 1);
+        assert!(s.body(&pre).contains("## Unplaced comments"));
+    }
+
+    #[test]
+    fn toggling_drops_it_from_the_body() {
+        let d = drafts();
+        let pre = preflight(&d, &parse(DIFF));
+        let mut s = Submission::new(Event::Comment);
+        s.toggle(pre.unmappable[0].0.id);
+        assert!(s.moved(&pre).is_empty());
+        assert!(!s.body(&pre).contains("## Unplaced comments"));
+    }
+
+    #[test]
+    fn toggling_twice_returns_to_rescuing_it() {
+        let d = drafts();
+        let pre = preflight(&d, &parse(DIFF));
+        let mut s = Submission::new(Event::Comment);
+        let id = pre.unmappable[0].0.id;
+        s.toggle(id);
+        s.toggle(id);
+        assert_eq!(s.resolution(id), Resolution::MoveToSummary);
+    }
+
+    #[test]
+    fn the_body_carries_review_drafts_and_the_typed_summary() {
+        let d = drafts();
+        let pre = preflight(&d, &parse(DIFF));
+        let mut s = Submission::new(Event::Comment);
+        s.summary = "and one more thought".into();
+        let body = s.body(&pre);
+        assert!(body.contains("overall fine"), "got: {body}");
+        assert!(body.contains("and one more thought"));
+    }
+
+    #[test]
+    fn an_empty_comment_review_is_refused_but_a_bare_approve_is_not() {
+        let empty: Vec<Comment> = Vec::new();
+        let pre = preflight(&empty, &parse(DIFF));
+        assert_eq!(Submission::new(Event::Comment).check(&pre), Err(Refused::Empty));
+        assert_eq!(Submission::new(Event::Approve).check(&pre), Ok(()));
+    }
+
+    #[test]
+    fn the_payload_sends_only_the_mappable_comments() {
+        let d = drafts();
+        let pre = preflight(&d, &parse(DIFF));
+        let s = Submission::new(Event::Comment);
+        let p = s.payload("abc123", &pre);
+        assert_eq!(p["commit_id"], "abc123");
+        assert_eq!(p["comments"].as_array().unwrap().len(), 1, "one mappable line comment");
+    }
+
+    #[test]
+    fn everything_sent_changes_lifecycle_and_omitted_drafts_do_not() {
+        let d = drafts();
+        let pre = preflight(&d, &parse(DIFF));
+        let mut s = Submission::new(Event::Comment);
+        assert_eq!(s.sent_ids(&pre).len(), 3, "review + mappable + rescued");
+        s.toggle(pre.unmappable[0].0.id); // omit the file comment
+        assert_eq!(s.sent_ids(&pre).len(), 2, "the omitted one stays a local draft");
+    }
+
+    #[test]
+    fn a_published_review_marks_its_drafts_submitted() {
+        assert_eq!(Submission::new(Event::Comment).landed(), Lifecycle::Submitted);
+        assert_eq!(Submission::new(Event::Approve).landed(), Lifecycle::Submitted);
+    }
+
+    #[test]
+    fn a_pending_review_leaves_its_drafts_pushed_not_published() {
+        // GitHub has them but nobody can see them yet.
+        assert_eq!(Submission::new(Event::Draft).landed(), Lifecycle::PushedDraft);
     }
 }
 
