@@ -8,6 +8,7 @@ use crate::file_list::{file_entries, file_row};
 use crate::loader::{LoadedReview, ReviewData, list_reviews, load_review};
 use crate::navigate::*;
 use crate::rail::rail_row;
+use crate::sidebar;
 use crate::composer::{Key, TextBuffer, key_action, scope_for_file, scope_for_line, scope_for_range};
 use crate::residency::Residency;
 use crate::submit::{Event, Resolution, Submission, preflight};
@@ -109,6 +110,11 @@ pub struct Workspace {
     /// Focus for the composer, so typing reaches it and not the diff.
     composer_focus: FocusHandle,
     theme: Theme,
+    /// Sidebar width in px, dragged by the divider. Session-only — persisting
+    /// it belongs with the config file (spec B).
+    sidebar_width: f32,
+    /// `⌘B`. Collapsed, the diff owns the whole window.
+    sidebar_collapsed: bool,
     focus: FocusHandle,
     error: Option<String>,
 }
@@ -164,6 +170,8 @@ impl Workspace {
             visual_anchor: None,
             composer_focus: cx.focus_handle(),
             theme: Theme::dark(),
+            sidebar_width: 280.,
+            sidebar_collapsed: false,
             focus: cx.focus_handle(),
             error: None,
         };
@@ -1647,33 +1655,23 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &CancelSubmit, window, cx| this.leave_mode(window, cx)))
             .on_action(cx.listener(|this, _: &SendReview, window, cx| this.send_review(window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
+                this.sidebar_collapsed = !this.sidebar_collapsed;
+                cx.notify();
+            }))
             .flex()
             .size_full()
             .bg(theme.surface)
             .font_family(theme.font_code)
             .text_color(theme.text_primary)
-            .child(
+            .children((!self.sidebar_collapsed).then(|| {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_1()
-                    .w(px(300.))
+                    .w(px(self.sidebar_width))
                     .h_full()
-                    .p_2()
-                    .border_r_1()
-                    .border_color(theme.border_subtle)
-                    .child(
-                        div()
-                            .px_3()
-                            .py_2()
-                            .text_sm()
-                            .text_color(theme.text_tertiary)
-                            .child(SharedString::from(format!(
-                                "{} — {} reviews",
-                                self.repo.slug(),
-                                self.reviews.len()
-                            ))),
-                    )
+                    .bg(self.theme.surface)
+                    .child(sidebar::section_header("reviews", self.reviews.len(), &theme))
                     .child(
                         uniform_list(
                             "reviews",
@@ -1700,18 +1698,8 @@ impl Render for Workspace {
                             }),
                         )
                         .flex_1(),
-                    ),
-            )
-            .children((file_count > 0).then(|| {
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .w(px(320.))
-                    .h_full()
-                    .p_2()
-                    .border_r_1()
-                    .border_color(theme.border_subtle)
+                    )
+                    .child(sidebar::section_header("files", file_count, &theme))
                     .child(
                         uniform_list(
                             "files",
@@ -1757,30 +1745,9 @@ impl Render for Workspace {
                         .flex_1(),
                     )
             }))
-            .children({
-                let drafts = self.render_drafts();
-                let threads = self.render_threads(cx);
-                (!drafts.is_empty() || !threads.is_empty()).then(|| {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .w(px(320.))
-                        .h_full()
-                        .p_2()
-                        .border_l_1()
-                        .border_color(theme.border_subtle)
-                        .children((!drafts.is_empty()).then(|| {
-                            div()
-                                .px_2()
-                                .text_sm()
-                                .text_color(theme.text_tertiary)
-                                .child("drafts")
-                        }))
-                        .children(drafts)
-                        .children(threads)
-                })
-            })
+            .children((!self.sidebar_collapsed).then(|| {
+                sidebar::divider(&theme, cx.entity(), |v: &mut Self, w| v.sidebar_width = w)
+            }))
             .child(match self.diff() {
                 Some(diff) => div()
                     .flex()
@@ -1831,6 +1798,30 @@ impl Render for Workspace {
                         .child(text)
                         .into_any_element()
                 }
+            })
+            .children({
+                let drafts = self.render_drafts();
+                let threads = self.render_threads(cx);
+                (!drafts.is_empty() || !threads.is_empty()).then(|| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .w(px(320.))
+                        .h_full()
+                        .p_2()
+                        .border_l_1()
+                        .border_color(theme.border_subtle)
+                        .children((!drafts.is_empty()).then(|| {
+                            div()
+                                .px_2()
+                                .text_sm()
+                                .text_color(theme.text_tertiary)
+                                .child("drafts")
+                        }))
+                        .children(drafts)
+                        .children(threads)
+                })
             })
     }
 }
@@ -1923,6 +1914,18 @@ mod tests {
         cx.simulate_keystrokes("j");
         let moved = workspace.read_with(cx, |this, cx| this.diff().unwrap().read(cx).cursor);
         assert_eq!(moved, start + 1, "`j` must move the cursor one row");
+    }
+
+    /// `⌘B` must work from anywhere, including while composing — it is
+    /// navigation, not content, which is why its binding is unscoped.
+    #[gpui::test]
+    fn cmd_b_collapses_and_restores_the_sidebar(cx: &mut gpui::TestAppContext) {
+        let (workspace, cx) = workspace_with_diff(cx, GitHub::new(FakeGh::new()), Vec::new());
+        assert!(!workspace.read_with(cx, |this, _| this.sidebar_collapsed));
+        cx.simulate_keystrokes("cmd-b");
+        assert!(workspace.read_with(cx, |this, _| this.sidebar_collapsed));
+        cx.simulate_keystrokes("cmd-b");
+        assert!(!workspace.read_with(cx, |this, _| this.sidebar_collapsed));
     }
 
     /// An unresolved thread anchored to `line` on the new side.

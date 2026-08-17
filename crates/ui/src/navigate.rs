@@ -36,6 +36,7 @@ actions!(
         ToggleResolved,
         ReplyToThread,
         Suggest,
+        ToggleSidebar,
     ]
 );
 
@@ -107,6 +108,9 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // §8 has no key for this — suggestions are net-new (§7). `p` for
         // propose; `s` is the review-level comment and `c`/`C` are taken.
         KeyBinding::new("p", Suggest, Some("Diff")),
+        // The sidebar is navigation, not content — `⌘B` matches every editor
+        // the reviewer already uses.
+        KeyBinding::new("cmd-b", ToggleSidebar, None),
     ]
 }
 
@@ -333,7 +337,7 @@ mod tests {
         let before = pairs.len();
         pairs.dedup();
         assert_eq!(before, pairs.len(), "a key is bound twice in one context");
-        assert_eq!(before, 33, "every action in the actions! set needs a binding");
+        assert_eq!(before, 34, "every action in the actions! set needs a binding");
     }
 
     #[test]
