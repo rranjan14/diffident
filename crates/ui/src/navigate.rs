@@ -94,9 +94,13 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // `t` for thread; both are free in the Diff context.
         KeyBinding::new("t", NextThread, Some("Diff")),
         KeyBinding::new("shift-t", PrevThread, Some("Diff")),
-        // `space` is already the resolver's toggle key; in the Diff context it
-        // is free, and "toggle the thing under the cursor" is the same gesture.
-        KeyBinding::new("space", ToggleResolved, Some("Diff")),
+        // Deliberately not plain `space`, which is what this shipped as.
+        // Resolving posts to someone else's pull request, and space is the
+        // page-down key in every pager and browser — muscle memory alone would
+        // resolve whichever thread the cursor happened to be on, with no
+        // confirmation step and no way to notice. Shift keeps the "toggle the
+        // thing under the cursor" gesture while making it deliberate.
+        KeyBinding::new("shift-space", ToggleResolved, Some("Diff")),
         // `a` for answer. `r` is taken by ToggleReviewed and `shift-r` by
         // Refresh, both long-standing.
         KeyBinding::new("a", ReplyToThread, Some("Diff")),
@@ -330,5 +334,42 @@ mod tests {
         pairs.dedup();
         assert_eq!(before, pairs.len(), "a key is bound twice in one context");
         assert_eq!(before, 33, "every action in the actions! set needs a binding");
+    }
+
+    #[test]
+    fn an_unconfirmed_github_write_is_never_a_bare_keystroke() {
+        // `ToggleResolved` posts to someone else's pull request the instant it
+        // fires. Unlike `Submit`, which goes through the resolver and then the
+        // confirm modal, there is nothing between the key and the network. This
+        // shipped as a bare `space` — page-down muscle memory from every pager
+        // and browser — which would resolve whichever thread the cursor was on
+        // with no way to notice. Add to this list whenever a new action writes
+        // to GitHub without a confirmation step.
+        const UNCONFIRMED_WRITES: [&str; 1] = ["ToggleResolved"];
+        let mut checked = 0;
+        for binding in key_bindings() {
+            let name = binding.action().name();
+            if !UNCONFIRMED_WRITES.iter().any(|w| name.ends_with(w)) {
+                continue;
+            }
+            checked += 1;
+            let keys = binding
+                .keystrokes()
+                .iter()
+                .map(|k| k.unparse())
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                keys.contains('-'),
+                "{name} is bound to a bare `{keys}` — one accidental keypress from writing to someone else's PR"
+            );
+        }
+        // Without this the test goes quietly vacuous the moment an action is
+        // renamed, and stops guarding anything at all.
+        assert_eq!(
+            checked,
+            UNCONFIRMED_WRITES.len(),
+            "an action in UNCONFIRMED_WRITES no longer exists under that name"
+        );
     }
 }
