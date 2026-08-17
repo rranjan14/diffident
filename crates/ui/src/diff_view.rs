@@ -96,11 +96,14 @@ impl DiffView {
 
     /// Replace the inline threads and tell the list which rows changed height.
     ///
-    /// Splices only the affected rows rather than resetting: `ListState::reset`
-    /// discards the scroll position, and having the diff jump to the top every
-    /// time someone resolves a thread would be worse than the stale heights
-    /// this is here to prevent. `splice` preserves the scroll offset unless the
-    /// spliced range contains it.
+    /// `remeasure_items` rather than `reset` or `splice`. `reset` discards the
+    /// scroll position, so the diff would jump to the top every time someone
+    /// resolved a thread. `splice` replaces the rows with unmeasured ones,
+    /// which throws away the uniform height hint — the affected rows would
+    /// count as *zero* tall until next drawn, and these are precisely the tall
+    /// ones. `remeasure_items` is documented for exactly this case: same index,
+    /// same count, changed content, possibly changed height, and it anchors the
+    /// scroll position when the changed row is the topmost visible one.
     pub fn set_threads(
         &mut self,
         groups: Vec<(usize, Vec<ReviewThread>)>,
@@ -116,7 +119,7 @@ impl DiffView {
         self.selected_thread = selected;
         for row in touched {
             if row < self.rows.len() {
-                self.list.splice(row..row + 1, 1);
+                self.list.remeasure_items(row..row + 1);
             }
         }
     }
