@@ -398,7 +398,12 @@ impl Workspace {
     }
 
     /// A keystroke while the composer has focus.
-    fn composer_key(&mut self, key: &Key, cx: &mut Context<Self>) {
+    ///
+    /// Takes `window` because closing the composer has to hand focus back.
+    /// GPUI dispatches actions along the focus chain, so leaving focus on a
+    /// handle whose element has just been removed silently kills every diff
+    /// binding — the app looks alive and answers no keys at all.
+    fn composer_key(&mut self, key: &Key, window: &mut Window, cx: &mut Context<Self>) {
         let Some(composing) = self.composing.as_mut() else {
             return;
         };
@@ -413,8 +418,14 @@ impl Workspace {
             Key::Down => composing.buffer.down(),
             Key::Home => composing.buffer.home(),
             Key::End => composing.buffer.end(),
-            Key::Cancel => self.composing = None,
-            Key::Save => self.save_draft(),
+            Key::Cancel => {
+                self.composing = None;
+                self.focus.focus(window, cx);
+            }
+            Key::Save => {
+                self.save_draft();
+                self.focus.focus(window, cx);
+            }
             Key::Ignore => return,
         }
         cx.notify();
@@ -491,7 +502,7 @@ impl Workspace {
             .id("composer")
             .track_focus(&self.composer_focus)
             .key_context("Composer")
-            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                 let k = &ev.keystroke;
                 let action = key_action(
                     &k.key,
@@ -499,7 +510,7 @@ impl Workspace {
                     k.modifiers.platform,
                     k.modifiers.control,
                 );
-                this.composer_key(&action, cx);
+                this.composer_key(&action, window, cx);
             }))
             .flex()
             .flex_col()
