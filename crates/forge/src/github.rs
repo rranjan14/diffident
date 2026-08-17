@@ -51,6 +51,14 @@ impl<R: GhRunner> Forge for GitHub<R> {
         let args = ["pr", "diff", &n, "--repo", &slug, "--color", "never"];
         self.runner.run(&args, None)
     }
+
+    fn create_review(&self, repo: &Repo, number: u32, payload: &str) -> Result<(), GhError> {
+        let endpoint = format!("repos/{}/pulls/{number}/reviews", repo.slug());
+        // The payload goes on stdin, never in argv: a review with many comments
+        // is easily past the OS argument-length limit (§5).
+        let args = ["api", &endpoint, "--method", "POST", "--input", "-"];
+        self.runner.run(&args, Some(payload)).map(|_| ())
+    }
 }
 
 #[cfg(test)]
@@ -108,5 +116,31 @@ mod tests {
             .list_prs(&repo())
             .unwrap_err();
         assert!(matches!(err, GhError::BadOutput(_)));
+    }
+
+    #[test]
+    fn create_review_posts_to_the_reviews_endpoint() {
+        let gh = FakeGh::new().with("api repos/o/r/pulls/7/reviews --method POST --input -", "{}");
+        let github = GitHub::new(gh);
+        github.create_review(&repo(), 7, r#"{"body":"hi"}"#).unwrap();
+        assert_eq!(
+            github.runner().calls(),
+            vec!["api repos/o/r/pulls/7/reviews --method POST --input -".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_review_payload_travels_on_stdin_not_in_argv() {
+        // A review with many comments is easily past the OS argument limit (§5).
+        let gh = FakeGh::new().with("api repos/o/r/pulls/7/reviews --method POST --input -", "{}");
+        let github = GitHub::new(gh);
+        github.create_review(&repo(), 7, r#"{"body":"hi"}"#).unwrap();
+        assert_eq!(github.runner().stdins(), vec![Some(r#"{"body":"hi"}"#.to_string())]);
+    }
+
+    #[test]
+    fn a_rejected_review_surfaces_the_error_rather_than_reporting_success() {
+        let gh = FakeGh::new(); // nothing registered -> the call fails
+        assert!(GitHub::new(gh).create_review(&repo(), 7, "{}").is_err());
     }
 }
