@@ -220,6 +220,88 @@ pub fn review_threads<R: GhRunner>(
     }
     Ok(all)
 }
+
+/// Mark a thread resolved. The thread's node id is the whole address — no repo
+/// or PR number is needed, because a GraphQL global id already carries them.
+const RESOLVE: &str = r#"
+mutation($id: ID!) {
+  resolveReviewThread(input: {threadId: $id}) {
+    thread { id isResolved }
+  }
+}
+"#;
+
+const UNRESOLVE: &str = r#"
+mutation($id: ID!) {
+  unresolveReviewThread(input: {threadId: $id}) {
+    thread { id isResolved }
+  }
+}
+"#;
+
+#[derive(Deserialize)]
+struct ResolutionEnvelope {
+    data: ResolutionData,
+}
+/// One struct for both mutations. They return the same shape under different
+/// keys, and `alias` is what stops that from becoming two structs that
+/// gradually stop agreeing.
+#[derive(Deserialize)]
+struct ResolutionData {
+    #[serde(rename = "resolveReviewThread", alias = "unresolveReviewThread")]
+    payload: ResolutionPayload,
+}
+#[derive(Deserialize)]
+struct ResolutionPayload {
+    thread: ResolvedThread,
+}
+#[derive(Deserialize)]
+struct ResolvedThread {
+    #[serde(rename = "isResolved")]
+    is_resolved: bool,
+}
+
+/// The JSON body for one resolve/unresolve. Stdin, like every other payload (§5).
+pub fn resolution_body(thread_id: &str, resolved: bool) -> String {
+    serde_json::json!({
+        "query": if resolved { RESOLVE } else { UNRESOLVE },
+        "variables": { "id": thread_id },
+    })
+    .to_string()
+}
+
+/// The thread's resolved state, as GitHub reports it back.
+pub fn parse_resolution(raw: &str) -> Result<bool, GhError> {
+    let env: ResolutionEnvelope =
+        serde_json::from_str(raw).map_err(|e| GhError::BadOutput(e.to_string()))?;
+    Ok(env.data.payload.thread.is_resolved)
+}
+
+/// Resolve or unresolve a thread.
+///
+/// A GraphQL error already arrives as `GhError::Failed` — `gh api graphql`
+/// exits non-zero whenever the response carries an `errors` array, even with
+/// `data` partly populated. The check below is for the other failure: a 200
+/// that reports a state we did not ask for. Reporting success there would leave
+/// the reviewer's pane disagreeing with GitHub, and nothing would ever correct
+/// it until the next full reload.
+pub fn set_resolved<R: GhRunner>(
+    runner: &R,
+    thread_id: &str,
+    resolved: bool,
+) -> Result<(), GhError> {
+    let raw = runner.run(
+        &["api", "graphql", "--input", "-"],
+        Some(&resolution_body(thread_id, resolved)),
+    )?;
+    let now = parse_resolution(&raw)?;
+    if now != resolved {
+        return Err(GhError::BadOutput(format!(
+            "asked GitHub to set resolved={resolved}, it reports {now}"
+        )));
+    }
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,5 +403,58 @@ mod tests {
         // the PR is clean when nobody knows.
         let gh = FakeGh::new();
         assert!(review_threads(&gh, &repo(), 1).is_err());
+    }
+
+    const RESOLVED_OK: &str =
+        r#"{"data":{"resolveReviewThread":{"thread":{"id":"PRRT_1","isResolved":true}}}}"#;
+    const UNRESOLVED_OK: &str =
+        r#"{"data":{"unresolveReviewThread":{"thread":{"id":"PRRT_1","isResolved":false}}}}"#;
+
+    #[test]
+    fn resolving_and_unresolving_share_one_parser() {
+        // The two mutations differ only in their payload key, so one aliased
+        // struct reads both rather than two near-identical ones drifting apart.
+        assert!(parse_resolution(RESOLVED_OK).unwrap());
+        assert!(!parse_resolution(UNRESOLVED_OK).unwrap());
+    }
+
+    #[test]
+    fn each_direction_sends_its_own_mutation() {
+        let r: serde_json::Value = serde_json::from_str(&resolution_body("T", true)).unwrap();
+        let q = r["query"].as_str().unwrap();
+        assert!(q.contains("resolveReviewThread"));
+        assert!(!q.contains("unresolveReviewThread"), "must not send both");
+        let u: serde_json::Value = serde_json::from_str(&resolution_body("T", false)).unwrap();
+        assert!(u["query"].as_str().unwrap().contains("unresolveReviewThread"));
+        assert_eq!(u["variables"]["id"], "T");
+    }
+
+    #[test]
+    fn the_mutation_travels_on_stdin_like_every_other_payload() {
+        // §5 gotcha 3: a multi-line GraphQL document in argv hits length limits.
+        let gh = FakeGh::new().with("api graphql --input -", RESOLVED_OK);
+        set_resolved(&gh, "PRRT_1", true).unwrap();
+        assert_eq!(gh.calls(), vec!["api graphql --input -".to_string()]);
+        assert!(gh.stdins()[0].as_ref().unwrap().contains("PRRT_1"));
+    }
+
+    #[test]
+    fn a_server_that_disagrees_is_an_error_not_a_silent_success() {
+        // If the UI marks a thread resolved on the strength of a call that did
+        // not resolve it, the reviewer moves on from a conversation that is
+        // still open on GitHub. Comparing the returned state costs one `if`.
+        let gh = FakeGh::new().with("api graphql --input -", UNRESOLVED_OK);
+        assert!(set_resolved(&gh, "PRRT_1", true).is_err());
+    }
+
+    #[test]
+    fn a_failed_mutation_surfaces_rather_than_reporting_success() {
+        let gh = FakeGh::new(); // nothing registered
+        assert!(set_resolved(&gh, "PRRT_1", true).is_err());
+    }
+
+    #[test]
+    fn a_malformed_response_is_bad_output_not_a_panic() {
+        assert!(matches!(parse_resolution("not json"), Err(GhError::BadOutput(_))));
     }
 }
