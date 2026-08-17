@@ -218,6 +218,90 @@ impl Row {
     }
 }
 
+/// Fill the collapsed gap before `before_hunk_ix` with the real file contents.
+///
+/// **This is the only thing in the project that changes a diff after it is
+/// parsed**, and it is deliberately shaped so that nothing downstream has to
+/// cope with the change. It edits `DiffFile` only; the caller rebuilds `rows`
+/// and `highlights` from scratch afterwards. Splicing the derived vectors in
+/// step would mean keeping four index spaces in agreement by hand — rows,
+/// highlights, the cursor, and every anchor `place()` computed — and getting
+/// one of them wrong silently misattributes a comment.
+///
+/// `source` is the file at the head commit, so its line numbering is the *new*
+/// side's. Old numbers are derived from the offset the following hunk already
+/// records between the two sides, which is exact for a gap: a gap contains only
+/// unchanged lines, so the offset cannot drift inside it.
+///
+/// Does nothing when the gap is already empty, when the index is out of range,
+/// or when `source` is too short to contain the gap — a file that has moved on
+/// since the diff was taken should leave the diff alone rather than fill it
+/// with the wrong lines.
+pub fn expand_gap(file: &mut DiffFile, before_hunk_ix: usize, source: &str) -> bool {
+    let lines: Vec<&str> = source.lines().collect();
+
+    // Where the gap starts on the new side: one past the end of the previous
+    // hunk, or the top of the file.
+    let new_from = match before_hunk_ix.checked_sub(1) {
+        Some(prev) => match file.hunks.get(prev) {
+            Some(h) => h.new_start + h.new_count,
+            None => return false,
+        },
+        None => 1,
+    };
+    // Where it ends, and the old/new offset to reconstruct old numbers with.
+    let (new_to, offset) = match file.hunks.get(before_hunk_ix) {
+        Some(h) => (h.new_start, i64::from(h.new_start) - i64::from(h.old_start)),
+        // A trailing gap runs to the end of the file. The offset is whatever
+        // the last hunk established.
+        None => match file.hunks.last() {
+            Some(h) => (
+                lines.len() as u32 + 1,
+                i64::from(h.new_start) - i64::from(h.old_start),
+            ),
+            None => return false,
+        },
+    };
+    if new_to <= new_from {
+        return false;
+    }
+    if (new_to - 1) as usize > lines.len() {
+        return false;
+    }
+
+    let filled: Vec<DiffLine> = (new_from..new_to)
+        .map(|n| DiffLine {
+            kind: LineKind::Context,
+            text: lines[(n - 1) as usize].to_string(),
+            old_lineno: u32::try_from(i64::from(n) - offset).ok(),
+            new_lineno: Some(n),
+            no_newline: false,
+        })
+        .collect();
+    if filled.is_empty() {
+        return false;
+    }
+    let count = filled.len() as u32;
+
+    match file.hunks.get_mut(before_hunk_ix) {
+        Some(h) => {
+            // Grow the following hunk upward to swallow the gap.
+            h.old_start = h.old_start.saturating_sub(count);
+            h.new_start = h.new_start.saturating_sub(count);
+            h.old_count += count;
+            h.new_count += count;
+            h.lines.splice(0..0, filled);
+        }
+        None => {
+            let h = file.hunks.last_mut().expect("checked above");
+            h.old_count += count;
+            h.new_count += count;
+            h.lines.extend(filled);
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +314,90 @@ mod tests {
             new_lineno: new,
             no_newline: false,
         }
+    }
+
+    /// a.rs at head: ten numbered lines, with line 5 changed.
+    const SOURCE: &str = "l1\nl2\nl3\nl4\nfive\nl6\nl7\nl8\nl9\nl10\n";
+    /// A diff touching only line 5, so lines 1-2 are collapsed above it.
+    const GAPPED: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -3,5 +3,5 @@\n l3\n l4\n-5\n+five\n l6\n l7\n";
+
+    #[test]
+    fn expanding_a_leading_gap_reveals_the_lines_above_the_hunk() {
+        let mut files = parser::parse(GAPPED);
+        let before = files[0].hunks[0].lines.len();
+        assert!(expand_gap(&mut files[0], 0, SOURCE));
+        let h = &files[0].hunks[0];
+        assert_eq!(h.lines.len(), before + 2, "lines 1 and 2 arrived");
+        assert_eq!(h.lines[0].text, "l1");
+        assert_eq!(h.new_start, 1, "the hunk now starts at the top of the file");
+    }
+
+    #[test]
+    fn revealed_lines_carry_both_line_numbers() {
+        // They are context, so they exist on both sides — and a comment left on
+        // one has to anchor correctly, which needs the old number too.
+        let mut files = parser::parse(GAPPED);
+        expand_gap(&mut files[0], 0, SOURCE);
+        let first = &files[0].hunks[0].lines[0];
+        assert_eq!(first.new_lineno, Some(1));
+        assert_eq!(first.old_lineno, Some(1), "no offset before the first change");
+        assert_eq!(first.kind, LineKind::Context);
+    }
+
+    #[test]
+    fn the_hunk_counts_stay_consistent_with_its_lines() {
+        // build_rows and every line-number calculation trust these.
+        let mut files = parser::parse(GAPPED);
+        expand_gap(&mut files[0], 0, SOURCE);
+        let h = &files[0].hunks[0];
+        let old_lines = h.lines.iter().filter(|l| l.kind != LineKind::Added).count();
+        let new_lines = h.lines.iter().filter(|l| l.kind != LineKind::Removed).count();
+        assert_eq!(h.old_count as usize, old_lines);
+        assert_eq!(h.new_count as usize, new_lines);
+    }
+
+    #[test]
+    fn a_trailing_gap_appends_to_the_last_hunk() {
+        let mut files = parser::parse(GAPPED);
+        let hunks = files[0].hunks.len();
+        assert!(expand_gap(&mut files[0], hunks, SOURCE));
+        let h = files[0].hunks.last().unwrap();
+        assert_eq!(h.lines.last().unwrap().text, "l10", "down to the end of file");
+    }
+
+    #[test]
+    fn a_file_that_has_moved_on_is_left_alone() {
+        // The source is fetched at the head SHA; if it does not reach far
+        // enough, filling the gap would invent lines that are not there.
+        let mut files = parser::parse(GAPPED);
+        let before = files[0].hunks[0].lines.len();
+        assert!(!expand_gap(&mut files[0], 0, "l1\n"), "too short to fill");
+        assert_eq!(files[0].hunks[0].lines.len(), before, "and nothing changed");
+    }
+
+    #[test]
+    fn expanding_an_already_full_gap_does_nothing() {
+        let mut files = parser::parse(GAPPED);
+        expand_gap(&mut files[0], 0, SOURCE);
+        let after_first = files[0].hunks[0].lines.len();
+        assert!(!expand_gap(&mut files[0], 0, SOURCE), "nothing left to reveal");
+        assert_eq!(files[0].hunks[0].lines.len(), after_first);
+    }
+
+    #[test]
+    fn an_out_of_range_hunk_index_is_refused_rather_than_panicking() {
+        let mut files = parser::parse(GAPPED);
+        assert!(!expand_gap(&mut files[0], 99, SOURCE));
+    }
+
+    #[test]
+    fn the_expanded_file_still_builds_rows() {
+        // The caller rebuilds rows and highlights from the edited file, so the
+        // edit has to leave something buildable behind.
+        let mut files = parser::parse(GAPPED);
+        expand_gap(&mut files[0], 0, SOURCE);
+        let rows = rows::build_rows(&files);
+        assert!(rows.iter().any(|r| r.line(&files).is_some_and(|l| l.text == "l1")));
     }
 
     #[test]

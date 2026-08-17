@@ -72,6 +72,19 @@ impl<R: GhRunner> Forge for GitHub<R> {
         crate::threads::review_threads(&self.runner, repo, number)
     }
 
+    fn file_at(&self, repo: &Repo, path: &str, sha: &str) -> Result<String, GhError> {
+        // §5 names this endpoint. The raw Accept header is what makes it return
+        // the file rather than a JSON envelope with base64 inside it.
+        let endpoint = format!("repos/{}/contents/{path}?ref={sha}", repo.slug());
+        let args = [
+            "api",
+            &endpoint,
+            "-H",
+            "Accept: application/vnd.github.raw",
+        ];
+        self.runner.run(&args, None)
+    }
+
     fn set_resolved(&self, thread_id: &str, resolved: bool) -> Result<(), GhError> {
         crate::threads::set_resolved(&self.runner, thread_id, resolved)
     }
@@ -140,6 +153,28 @@ mod tests {
             .list_prs(&repo())
             .unwrap_err();
         assert!(matches!(err, GhError::BadOutput(_)));
+    }
+
+    #[test]
+    fn file_at_asks_for_raw_contents_at_a_commit() {
+        // Without the raw Accept header this returns a JSON envelope with the
+        // file base64-encoded inside it, which would parse as a file whose
+        // every line is gibberish.
+        let gh = FakeGh::new().with(
+            "api repos/o/r/contents/src/a.rs?ref=abc -H Accept: application/vnd.github.raw",
+            "line one\nline two\n",
+        );
+        let github = GitHub::new(gh);
+        let text = github.file_at(&repo(), "src/a.rs", "abc").unwrap();
+        assert_eq!(text.lines().count(), 2);
+    }
+
+    #[test]
+    fn a_missing_file_surfaces_rather_than_reading_as_empty() {
+        // An empty string would expand the gap to nothing and look like the
+        // file genuinely had no lines there.
+        let github = GitHub::new(FakeGh::new());
+        assert!(github.file_at(&repo(), "gone.rs", "abc").is_err());
     }
 
     #[test]
