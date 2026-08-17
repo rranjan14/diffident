@@ -1340,6 +1340,7 @@ dependencies = [
  "diffident-model",
  "diffident-session",
  "gpui",
+ "serde_json",
 ]
 
 [[package]]
