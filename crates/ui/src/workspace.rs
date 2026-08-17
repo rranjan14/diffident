@@ -511,6 +511,38 @@ impl Workspace {
         }
     }
 
+    /// `p` — comment on the selected line(s), pre-filled with a suggestion
+    /// fence containing what is there now.
+    ///
+    /// Seeding with the real source is the whole value: a suggestion has to
+    /// match the file exactly for GitHub to offer a commit button, and
+    /// retyping a line from a rendered diff is how that goes wrong.
+    fn suggest(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(diff) = self.diff() else { return };
+        let (scope, lines) = {
+            let view = diff.read(cx);
+            let anchor = self.visual_anchor.unwrap_or(view.cursor);
+            let scope = match self.visual_anchor {
+                Some(a) => scope_for_range(view.files(), view.rows(), a, view.cursor),
+                None => scope_for_line(view.files(), view.rows(), view.cursor),
+            };
+            (
+                scope,
+                crate::suggest::source_lines(view.files(), view.rows(), anchor, view.cursor),
+            )
+        };
+        let Some(scope) = scope else { return };
+        // Nothing on the new side to replace — a removed-lines-only selection.
+        // GitHub would reject the suggestion, so it is better not to offer one.
+        if lines.is_empty() {
+            self.error =
+                Some("a suggestion needs lines on the new side of the diff".into());
+            cx.notify();
+            return;
+        }
+        self.compose_with(scope, Some(crate::suggest::fence(&lines)), window, cx);
+    }
+
     /// `v` — start or clear a visual selection at the cursor.
     fn toggle_visual(&mut self, cx: &mut Context<Self>) {
         self.visual_anchor = match self.visual_anchor {
@@ -813,12 +845,26 @@ impl Workspace {
                     )
                     .child(
                         div()
-                            .text_color(if c.is_editable() {
-                                theme.text
-                            } else {
-                                theme.text_muted
-                            })
-                            .child(SharedString::from(c.body.clone())),
+                            .children(crate::suggest::segments(&c.body).into_iter().map(|seg| {
+                                match seg {
+                                    crate::suggest::Segment::Text(text) => div()
+                                        .text_color(if c.is_editable() {
+                                            theme.text
+                                        } else {
+                                            theme.text_muted
+                                        })
+                                        .child(SharedString::from(text)),
+                                    crate::suggest::Segment::Suggestion(text) => div()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .bg(theme.added_bg)
+                                        .border_l_2()
+                                        .border_color(theme.added)
+                                        .text_color(theme.added)
+                                        .child(SharedString::from(text)),
+                                }
+                            })),
                     )
                     .into_any_element()
             })
@@ -907,11 +953,26 @@ impl Workspace {
                                         c.author.clone()
                                     })),
                             )
-                            .child(
-                                div()
-                                    .text_color(theme.text_muted)
-                                    .child(SharedString::from(c.body.clone())),
-                            )
+                            .children(crate::suggest::segments(&c.body).into_iter().map(|seg| {
+                                match seg {
+                                    crate::suggest::Segment::Text(text) => div()
+                                        .text_color(theme.text_muted)
+                                        .child(SharedString::from(text)),
+                                    // A suggestion is a proposed edit, not
+                                    // prose. Rendering it as prose is how a
+                                    // reviewer misses that there is a change
+                                    // waiting to be accepted.
+                                    crate::suggest::Segment::Suggestion(text) => div()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .bg(theme.added_bg)
+                                        .border_l_2()
+                                        .border_color(theme.added)
+                                        .text_color(theme.added)
+                                        .child(SharedString::from(text)),
+                                }
+                            }))
                     }))
                     .into_any_element(),
             );
@@ -1041,7 +1102,6 @@ impl Workspace {
         self.move_cursor(move |rows, ix| half_page(rows, ix, distance, down), cx);
     }
 
-    /// `ctrl-tab` / `ctrl-shift-tab`: move to the adjacent review in the rail.
     /// `t` / `T` — move between the conversations on this PR.
     fn step_thread(&mut self, delta: isize, cx: &mut Context<Self>) {
         let Some(number) = self.active_number() else {
@@ -1099,6 +1159,8 @@ impl Workspace {
         .detach();
     }
 
+    /// `ctrl-tab` / `ctrl-shift-tab`: move to the adjacent review in the rail.
+    ///
     /// `ctrl-tab` / `ctrl-shift-tab`: move to the adjacent review in the rail.
     ///
     /// Wraps, unlike diff navigation: the rail is a short ring the reviewer is
@@ -1552,6 +1614,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &PrevThread, _, cx| this.step_thread(-1, cx)))
             .on_action(cx.listener(|this, _: &ToggleResolved, _, cx| this.toggle_resolved(cx)))
             .on_action(cx.listener(|this, _: &ReplyToThread, window, cx| this.reply(window, cx)))
+            .on_action(cx.listener(|this, _: &Suggest, window, cx| this.suggest(window, cx)))
             .on_action(cx.listener(|this, _: &NextReview, _, cx| this.step_review(1, cx)))
             .on_action(cx.listener(|this, _: &PrevReview, _, cx| this.step_review(-1, cx)))
             .on_action(cx.listener(|this, _: &Submit, window, cx| this.begin_submit(window, cx)))

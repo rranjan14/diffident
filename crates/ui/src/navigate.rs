@@ -35,6 +35,7 @@ actions!(
         PrevThread,
         ToggleResolved,
         ReplyToThread,
+        Suggest,
     ]
 );
 
@@ -99,6 +100,9 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // `a` for answer. `r` is taken by ToggleReviewed and `shift-r` by
         // Refresh, both long-standing.
         KeyBinding::new("a", ReplyToThread, Some("Diff")),
+        // §8 has no key for this — suggestions are net-new (§7). `p` for
+        // propose; `s` is the review-level comment and `c`/`C` are taken.
+        KeyBinding::new("p", Suggest, Some("Diff")),
     ]
 }
 
@@ -325,6 +329,6 @@ mod tests {
         let before = pairs.len();
         pairs.dedup();
         assert_eq!(before, pairs.len(), "a key is bound twice in one context");
-        assert_eq!(before, 32, "every action in the actions! set needs a binding");
+        assert_eq!(before, 33, "every action in the actions! set needs a binding");
     }
 }
