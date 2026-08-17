@@ -43,6 +43,11 @@ pub struct DiffView {
     /// Viewport width last seen while wrap was on. Compared in `render` so a
     /// resize re-measures every row.
     last_width: f32,
+    /// The definite width a code line wraps inside, recomputed each frame in
+    /// `render` — which is the only place it *can* be, because reading the
+    /// viewport borrows the `ListState` and `render_row` runs while the list
+    /// already holds that borrow.
+    text_w: Pixels,
 }
 
 impl DiffView {
@@ -74,6 +79,7 @@ impl DiffView {
             matches: Vec::new(),
             wrap: true,
             last_width: 0.,
+            text_w: px(600.),
         }
     }
 
@@ -236,6 +242,34 @@ impl DiffView {
         )
     }
 
+    /// The gutter: two line-number columns and the sigil.
+    ///
+    /// A constant because `text_width` has to subtract it, and a gutter whose
+    /// width is written once here and guessed once there is a gutter that
+    /// eventually disagrees with itself.
+    const GUTTER: f32 = 38. + 38. + 14.;
+    /// The density track, overlaid on the right edge (`density::track`).
+    const TRACK: f32 = 12.;
+
+    /// The width a code line has to wrap inside.
+    ///
+    /// **This must be a definite width.** `StyledText` only wraps when its
+    /// available width is `Definite`; a `flex_1` child has no such width while
+    /// it is being measured, so a long line measured one row tall and then
+    /// painted clipped. Deriving it from the viewport is what makes it
+    /// definite — and is why `render` re-measures every row whenever the
+    /// viewport width changes.
+    ///
+    /// Falls back to a nominal width before the first layout, when the
+    /// viewport is still zero: rows measured then are re-measured as soon as a
+    /// real width arrives.
+    fn text_width_for(width: f32) -> Pixels {
+        if width <= 0. {
+            return px(600.);
+        }
+        px((width - Self::GUTTER - Self::TRACK).max(1.))
+    }
+
     fn render_row(&self, ix: usize, theme: &Theme) -> impl IntoElement + use<> {
         match self.data.rows[ix] {
             Row::FileHeader { file_ix } => div()
@@ -318,8 +352,8 @@ impl DiffView {
                     .child(gutter)
                     .child(
                         div()
-                            .flex_1()
-                            .min_w(px(0.))
+                            // A definite width, not `flex_1`: see `text_width`.
+                            .w(self.text_w)
                             .when(self.wrap, |d| d.whitespace_normal())
                             .when(!self.wrap, |d| d.truncate())
                             .child(
@@ -401,6 +435,7 @@ impl Render for DiffView {
         // Any width change re-wraps every line, so every measured height is
         // stale. Nothing needed this before wrap existed.
         let w: f32 = self.viewport().size.width.into();
+        self.text_w = Self::text_width_for(w);
         if self.wrap && (w - self.last_width).abs() > 0.5 {
             self.last_width = w;
             self.list.remeasure_items(0..self.data.rows.len());
@@ -519,25 +554,39 @@ mod tests {
     }
 
     #[test]
-    fn a_line_row_uses_the_wrap_incantation_and_a_two_column_gutter() {
+    fn the_gutter_keeps_both_line_numbers() {
+        // A source check, and it says so: "the gutter shows two numbers" is a
+        // property of painted output, and nothing here can read pixels. It is
+        // narrow on purpose — the wrap half of this test used to assert that
+        // the code child was `flex_1` with `min_w(0)`, on the belief that flex
+        // "will not wrap unless it can shrink". That belief was backwards, and
+        // the passing test made the bug look verified for a whole phase. Wrap
+        // is now covered by measuring a row instead.
         let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/diff_view.rs"));
-        let flex = concat!("flex", "_1()");
-        let min = concat!("min_w(px(", "0.))");
-        let wrap_on = concat!("whitespace_", "normal()");
-        let wrap_off = concat!(".trun", "cate()");
         let old_col = concat!("px(38", ".)");
         let sigil = concat!("px(14", ".)");
         let single = concat!(".or(line.", "old_lineno)");
-        assert!(src.contains(flex), "the code child must take leftover width");
-        assert!(src.contains(min), "flex will not wrap unless it can shrink");
-        assert!(src.contains(wrap_on), "wrap on → whitespace_normal");
-        assert!(src.contains(wrap_off), "wrap off → truncate");
         assert!(src.contains(old_col), "each lineno column is 38px");
         assert!(src.contains(sigil), "the sigil column is 14px");
         assert!(
             !src.contains(single),
             "the gutter must not collapse to one number"
         );
+    }
+
+    #[test]
+    fn the_text_column_leaves_room_for_the_gutter_and_the_track() {
+        // The arithmetic the wrap width depends on. If it drifts from what the
+        // gutter actually renders, lines wrap at the wrong column.
+        let w = DiffView::text_width_for(1000.);
+        assert_eq!(f32::from(w), 1000. - DiffView::GUTTER - DiffView::TRACK);
+    }
+
+    #[test]
+    fn a_zero_width_viewport_still_yields_a_usable_wrap_width() {
+        // Rows measured before the first layout must not wrap at zero columns;
+        // `render` re-measures them once a real width arrives.
+        assert!(f32::from(DiffView::text_width_for(0.)) > 0.);
     }
 
     #[test]
@@ -552,6 +601,48 @@ mod tests {
             "the old viewport÷line_height half-page must be gone"
         );
         assert!(src.contains(last), "wrap + resize invalidates row heights");
+    }
+
+    /// Wrapping needs a *definite* width, and a flex child does not have one
+    /// while it is being measured.
+    ///
+    /// `StyledText` only wraps when `available_space.width` is `Definite`
+    /// (gpui `elements/text.rs`: `wrap_width` is `None` otherwise). A
+    /// `.flex_1().min_w(0)` container looks like it fills the row, and does
+    /// once laid out — but during the measure pass it has no width to wrap
+    /// against, so a long line measured as one row tall and then painted
+    /// clipped. Verified in the running app: a 233-character line in a 1095px
+    /// pane measured 26px; with a definite width it measured 130px.
+    #[gpui::test]
+    fn a_long_line_measures_taller_than_one_row(cx: &mut gpui::TestAppContext) {
+        let long = "x".repeat(400);
+        let files = diffident_diff::parser::parse(&format!(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+{long}\n"
+        ));
+        let rows = diffident_diff::rows::build_rows(&files);
+        let line_row = rows
+            .iter()
+            .position(|r| r.line(&files).is_some())
+            .expect("the fixture has a line");
+        let data = Arc::new(ReviewData {
+            highlights: vec![Vec::new(); rows.len()],
+            files,
+            rows,
+        });
+        let theme = Theme::dark();
+        let one_line = theme.line_height;
+
+        let (view, cx) = cx.add_window_view(|_, _| DiffView::new(data, theme));
+        cx.run_until_parked();
+
+        let measured = view.read_with(cx, |v, _| {
+            v.list.bounds_for_item(line_row).map(|b| f32::from(b.size.height))
+        });
+        let measured = measured.expect("the row was rendered");
+        assert!(
+            measured > one_line * 1.5,
+            "a 400-character line must wrap: measured {measured}px against a {one_line}px line"
+        );
     }
 
     #[gpui::test]
