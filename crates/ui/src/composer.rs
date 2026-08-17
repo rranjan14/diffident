@@ -260,16 +260,9 @@ pub fn scope_for_file(files: &[DiffFile], rows: &[Row], row_ix: usize) -> Option
 /// including context lines, which exist on both sides: GitHub renders the new
 /// side by default, so that is where the reviewer expects the comment to land.
 pub fn scope_for_line(files: &[DiffFile], rows: &[Row], row_ix: usize) -> Option<CommentScope> {
-    let &Row::Line {
-        file_ix,
-        hunk_ix,
-        line_ix,
-    } = rows.get(row_ix)?
-    else {
-        return None;
-    };
-    let file = files.get(file_ix)?;
-    let line = file.hunks.get(hunk_ix)?.lines.get(line_ix)?;
+    let row = rows.get(row_ix)?;
+    let file = files.get(row.file_ix()?)?;
+    let line = row.line(files)?;
     let (lineno, side) = match line.kind {
         LineKind::Removed => (line.old_lineno, Side::Old),
         _ => (line.new_lineno, Side::New),

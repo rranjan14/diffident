@@ -156,7 +156,52 @@ fn fnv1a(bytes: &[u8], mut hash: u64) -> u64 {
     hash
 }
 
+impl DiffLine {
+    /// Whether this line is the one a comment on `line` of `old_side` anchors to.
+    ///
+    /// One rule, one place. It was written out twice — once for placing a
+    /// remote thread on a row, once for deciding at submit time whether a
+    /// draft's anchor still exists — and the two copies had to agree for a
+    /// comment to land where the reviewer put it.
+    ///
+    /// `old_side: bool` rather than a `Side` enum: `Side` lives in
+    /// `diffident-model`, and this crate depends on serde alone. A whole
+    /// dependency edge to name one word is a bad trade; callers pass
+    /// `matches!(side, Side::Old)`.
+    ///
+    /// Note the asymmetry against `composer::scope_for_line`, which is
+    /// deliberate: *matching* an anchor supplied by GitHub must accept a
+    /// context line from either side, while *authoring* one picks a single
+    /// canonical side per keystroke.
+    pub fn anchors(&self, line: u32, old_side: bool) -> bool {
+        if old_side {
+            self.kind != LineKind::Added && self.old_lineno == Some(line)
+        } else {
+            self.kind != LineKind::Removed && self.new_lineno == Some(line)
+        }
+    }
+}
+
 impl Row {
+    /// The diff line this row shows, if it shows one.
+    ///
+    /// The `file_ix`/`hunk_ix`/`line_ix` walk was open-coded at four call
+    /// sites in three styles — `?`-chained, `let-else`, and direct indexing
+    /// that panics. Indices come from `build_rows` and are valid by
+    /// construction, but `Option` keeps every caller honest without any of
+    /// them having to decide that for itself.
+    pub fn line<'a>(&self, files: &'a [DiffFile]) -> Option<&'a DiffLine> {
+        let Row::Line {
+            file_ix,
+            hunk_ix,
+            line_ix,
+        } = *self
+        else {
+            return None;
+        };
+        files.get(file_ix)?.hunks.get(hunk_ix)?.lines.get(line_ix)
+    }
+
     /// Which file this row belongs to, if any.
     ///
     /// `Spacer` is the only row with no file — it sits *between* two of them.
@@ -170,5 +215,63 @@ impl Row {
             | Row::Expander { file_ix, .. } => Some(file_ix),
             Row::Spacer => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(kind: LineKind, old: Option<u32>, new: Option<u32>) -> DiffLine {
+        DiffLine {
+            kind,
+            text: String::new(),
+            old_lineno: old,
+            new_lineno: new,
+            no_newline: false,
+        }
+    }
+
+    #[test]
+    fn a_context_line_anchors_from_either_side() {
+        // The case the two former copies of this rule existed to get right: an
+        // unchanged line has a number on both sides, and a comment left on
+        // either one belongs to it. Getting this wrong loses the thread.
+        let l = line(LineKind::Context, Some(7), Some(9));
+        assert!(l.anchors(7, true), "old side");
+        assert!(l.anchors(9, false), "new side");
+        assert!(!l.anchors(9, true), "the new number is not the old one");
+    }
+
+    #[test]
+    fn an_added_line_never_anchors_on_the_old_side() {
+        // It has no pre-image, so an old-side anchor cannot mean this line
+        // however the numbers happen to line up.
+        let l = line(LineKind::Added, None, Some(4));
+        assert!(l.anchors(4, false));
+        assert!(!l.anchors(4, true));
+    }
+
+    #[test]
+    fn a_removed_line_never_anchors_on_the_new_side() {
+        let l = line(LineKind::Removed, Some(4), None);
+        assert!(l.anchors(4, true));
+        assert!(!l.anchors(4, false));
+    }
+
+    #[test]
+    fn only_a_line_row_yields_a_line() {
+        let files = parser::parse(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n ctx\n",
+        );
+        let rows = rows::build_rows(&files);
+        assert!(
+            rows.iter().any(|r| r.line(&files).is_some()),
+            "the fixture has a line row"
+        );
+        assert!(
+            Row::Spacer.line(&files).is_none(),
+            "a spacer shows no line, so asking for one is None rather than a panic"
+        );
     }
 }

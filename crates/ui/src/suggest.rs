@@ -27,10 +27,7 @@ pub fn source_lines(files: &[DiffFile], rows: &[Row], a: usize, b: usize) -> Vec
         .unwrap_or_default()
         .iter()
         .filter_map(|row| {
-            let &Row::Line { file_ix, hunk_ix, line_ix } = row else {
-                return None;
-            };
-            let line = files.get(file_ix)?.hunks.get(hunk_ix)?.lines.get(line_ix)?;
+            let line = row.line(files)?;
             (line.kind != LineKind::Removed).then(|| line.text.clone())
         })
         .collect()
