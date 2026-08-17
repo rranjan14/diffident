@@ -893,10 +893,27 @@ impl Workspace {
         };
         let view = diff.read(cx);
         let placed = crate::threads::place(threads, view.files(), view.rows());
-        let lost = crate::threads::unanchored(&placed);
 
         let mut out: Vec<gpui::AnyElement> = Vec::new();
+        let mut heading_shown = false;
         for (ix, p) in placed.iter().enumerate() {
+            // Anchored threads render inline against their code (Task 3).
+            // Repeating them here would make the reviewer check two places for
+            // the same conversation.
+            if p.is_anchored() {
+                continue;
+            }
+            if !heading_shown {
+                out.push(
+                    div()
+                        .px_2()
+                        .text_sm()
+                        .text_color(theme.text_muted)
+                        .child("threads not in this diff")
+                        .into_any_element(),
+                );
+                heading_shown = true;
+            }
             let is_selected = ix == self.thread_cursor.min(placed.len().saturating_sub(1));
             let t = p.thread;
             let where_ = match p.row {
@@ -992,22 +1009,8 @@ impl Workspace {
             );
         }
 
-        if lost > 0 {
-            out.push(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_sm()
-                    .text_color(theme.text_muted)
-                    .child(SharedString::from(format!(
-                        "{lost} thread(s) refer to code not in this diff"
-                    )))
-                    .into_any_element(),
-            );
-        }
-
-        // The resolver modal lists its keys; this pane had none, and moving
-        // resolve off plain `space` made it unguessable without a hint.
+        // Shown whenever the review has any conversation at all — the keys act
+        // on threads drawn inline just as much as on the ones listed here.
         if !placed.is_empty() {
             out.push(
                 div()
@@ -1730,13 +1733,6 @@ impl Render for Workspace {
                                 .child("drafts")
                         }))
                         .children(drafts)
-                        .children((!threads.is_empty()).then(|| {
-                            div()
-                                .px_2()
-                                .text_sm()
-                                .text_color(theme.text_muted)
-                                .child("threads")
-                        }))
                         .children(threads)
                 })
             })
