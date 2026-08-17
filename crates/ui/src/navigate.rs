@@ -38,6 +38,9 @@ actions!(
         Suggest,
         ToggleSidebar,
         ToggleWrap,
+        StartSearch,
+        NextMatch,
+        PrevMatch,
     ]
 );
 
@@ -114,6 +117,12 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-b", ToggleSidebar, None),
         // `w` for wrap. Free in the Diff context.
         KeyBinding::new("w", ToggleWrap, Some("Diff")),
+        // §8 names all three. `/` opens the input; `n`/`N` step the hits
+        // afterwards, from Browsing, which is why they are not scoped to the
+        // search input itself.
+        KeyBinding::new("/", StartSearch, Some("Diff")),
+        KeyBinding::new("n", NextMatch, Some("Diff")),
+        KeyBinding::new("shift-n", PrevMatch, Some("Diff")),
     ]
 }
 
@@ -340,7 +349,7 @@ mod tests {
         let before = pairs.len();
         pairs.dedup();
         assert_eq!(before, pairs.len(), "a key is bound twice in one context");
-        assert_eq!(before, 35, "every action in the actions! set needs a binding");
+        assert_eq!(before, 38, "every action in the actions! set needs a binding");
     }
 
     #[test]
