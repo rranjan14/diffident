@@ -98,7 +98,7 @@ pub fn load_review<F: Forge + Sync + ?Sized>(
 }
 
 /// List the repo's open PRs as rail-ready reviews, already in stack order.
-pub fn list_reviews<F: Forge>(forge: &F, repo: &Repo) -> Result<Vec<Review>, GhError> {
+pub fn list_reviews<F: Forge + ?Sized>(forge: &F, repo: &Repo) -> Result<Vec<Review>, GhError> {
     let prs = forge.list_prs(repo)?;
     let slug = repo.slug();
     Ok(stack_order(&prs)

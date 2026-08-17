@@ -1,6 +1,6 @@
 //! Orchestrator: parse args, open the window, wire the views. Nothing else.
 
-use diffident_forge::Repo;
+use diffident_forge::{Repo, gh::Gh, github::GitHub};
 use diffident_ui::{navigate, workspace::Workspace};
 use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 use gpui_platform::application;
@@ -63,7 +63,17 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| Workspace::new(args.repo.clone(), args.pr, window, cx)),
+            |window, cx| {
+                cx.new(|cx| {
+                    Workspace::new(
+                        std::sync::Arc::new(GitHub::new(Gh)),
+                        args.repo.clone(),
+                        args.pr,
+                        window,
+                        cx,
+                    )
+                })
+            },
         )
         .expect("failed to open window");
         cx.activate(true);

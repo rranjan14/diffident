@@ -12,7 +12,8 @@ use crate::composer::{Key, TextBuffer, key_action, scope_for_file, scope_for_lin
 use crate::residency::Residency;
 use crate::submit::{Event, Resolution, Submission, preflight};
 use crate::theme::Theme;
-use diffident_forge::{Forge, Repo, gh::Gh, github::GitHub};
+use diffident_forge::{Forge, Repo};
+use std::sync::Arc;
 use diffident_model::{LoadState, Review};
 use diffident_model::comment::{Comment, CommentScope, Drafts, Side};
 use diffident_model::reviewed::Reviewed;
@@ -55,6 +56,14 @@ impl Mode {
 }
 
 pub struct Workspace {
+    /// The code host, injected rather than constructed.
+    ///
+    /// Every `gh`-touching path used to name `GitHub::new(Gh)` inline, which
+    /// meant no test could ever build a `Workspace` — the reason two guard
+    /// tests in this file resort to reading their own source. `Arc<dyn>`
+    /// because the background executor needs to move a handle into a task and
+    /// the trait is deliberately object-safe (see `Forge`'s doc).
+    forge: Arc<dyn Forge + Send + Sync>,
     repo: Repo,
     reviews: Vec<Review>,
     active: Option<usize>,
@@ -125,8 +134,15 @@ struct Composing {
 }
 
 impl Workspace {
-    pub fn new(repo: Repo, open_pr: Option<u32>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        forge: Arc<dyn Forge + Send + Sync>,
+        repo: Repo,
+        open_pr: Option<u32>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut this = Self {
+            forge,
             repo: repo.clone(),
             reviews: Vec::new(),
             active: None,
@@ -154,10 +170,11 @@ impl Workspace {
     /// executor — a 400ms list call there freezes the window.
     fn refresh(&mut self, open_pr: Option<u32>, cx: &mut Context<Self>) {
         let repo = self.repo.clone();
+        let forge = self.forge.clone();
         cx.spawn(async move |this, cx| {
             let listed = cx
                 .background_executor()
-                .spawn(async move { list_reviews(&GitHub::new(Gh), &repo) })
+                .spawn(async move { list_reviews(forge.as_ref(), &repo) })
                 .await;
             this.update(cx, |this, cx| {
                 match listed {
@@ -255,6 +272,7 @@ impl Workspace {
         // `apply` instead.
         self.sync_threads(cx);
         let repo = self.repo.clone();
+        let forge = self.forge.clone();
 
         // Already resident: promote to most-recently-used and skip the fetch
         // entirely. This is what makes switching between stacked PRs instant.
@@ -278,7 +296,7 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let loaded = cx
                 .background_executor()
-                .spawn(async move { load_review(&GitHub::new(Gh), &repo, number) })
+                .spawn(async move { load_review(forge.as_ref(), &repo, number) })
                 .await;
             this.update(cx, |this, cx| {
                 match loaded {
@@ -704,10 +722,11 @@ impl Workspace {
             return;
         };
         let target = thread_id.clone();
+        let forge = self.forge.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { GitHub::new(Gh).reply(&thread_id, &body) })
+                .spawn(async move { forge.reply(&thread_id, &body) })
                 .await;
             this.update(cx, |this, cx| {
                 match result {
@@ -1200,10 +1219,11 @@ impl Workspace {
             return;
         };
         let target = id.clone();
+        let forge = self.forge.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { GitHub::new(Gh).set_resolved(&id, want) })
+                .spawn(async move { forge.set_resolved(&id, want) })
                 .await;
             this.update(cx, |this, cx| {
                 match result {
@@ -1357,10 +1377,11 @@ impl Workspace {
 
         self.leave_mode(window, cx);
         let repo = self.repo.clone();
+        let forge = self.forge.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { GitHub::new(Gh).create_review(&repo, number, &json) })
+                .spawn(async move { forge.create_review(&repo, number, &json) })
                 .await;
             this.update(cx, |this, cx| {
                 match result {
@@ -1809,8 +1830,83 @@ impl Render for Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{Placeholder, placeholder};
+    use super::{Placeholder, Workspace, placeholder};
+    use diffident_forge::gh::FakeGh;
+    use diffident_forge::github::GitHub;
+    use diffident_forge::threads::{ReviewThread, ThreadComment};
     use diffident_model::{LoadState, Review, ReviewId};
+    use std::sync::Arc;
+
+    /// One unresolved thread, the state the guarantee below is about.
+    fn open_thread() -> ReviewThread {
+        ReviewThread {
+            id: "PRRT_1".into(),
+            path: "a.rs".into(),
+            line: Some(1),
+            original_line: Some(1),
+            on_old_side: false,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![ThreadComment {
+                id: "PRRC_1".into(),
+                author: "octocat".into(),
+                body: "nit".into(),
+            }],
+        }
+    }
+
+    /// §7: "a failed submit leaves everything at LocalDraft" — the same rule
+    /// governs a failed resolve, and until the forge could be injected there
+    /// was no way to test either. `FakeGh` with nothing registered fails every
+    /// call, which is exactly the network error this guards against.
+    #[gpui::test]
+    fn a_failed_resolve_leaves_the_thread_as_it_was(cx: &mut gpui::TestAppContext) {
+        let forge = Arc::new(GitHub::new(FakeGh::new()));
+        let repo = diffident_forge::Repo {
+            owner: "o".into(),
+            name: "r".into(),
+        };
+        let window = cx.add_window(|window, cx| {
+            let mut this = Workspace::new(forge, repo, None, window, cx);
+            // Stand the review up directly rather than driving a whole fetch:
+            // the guarantee under test is about what happens *after* the
+            // mutation fails, not about how the thread got here.
+            this.reviews.push(Review {
+                id: ReviewId {
+                    repo: "o/r".into(),
+                    number: 1,
+                },
+                title: "t".into(),
+                branch: "b".into(),
+                depth: 0,
+                is_draft: false,
+                head_sha: "abc".into(),
+                rebased: false,
+                state: LoadState::Idle,
+            });
+            this.active = Some(0);
+            this.threads.insert(1, vec![open_thread()]);
+            this
+        });
+
+        window
+            .update(cx, |this, _, cx| this.toggle_resolved(cx))
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |this, _, _| {
+                assert!(
+                    !this.threads[&1][0].is_resolved,
+                    "GitHub rejected the write, so the thread must still read open"
+                );
+                assert!(
+                    this.error.is_some(),
+                    "and the reviewer must be told, or they move on believing it resolved"
+                );
+            })
+            .unwrap();
+    }
 
     fn review(state: LoadState) -> Review {
         Review {
