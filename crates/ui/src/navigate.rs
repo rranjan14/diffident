@@ -27,6 +27,7 @@ actions!(
         NextEvent,
         AdvanceSubmit,
         CancelSubmit,
+        SendReview,
         NextReview,
         PrevReview,
         Refresh,
@@ -77,6 +78,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("enter", AdvanceSubmit, Some("Resolver")),
         KeyBinding::new("escape", CancelSubmit, Some("Resolver")),
         KeyBinding::new("escape", CancelSubmit, Some("Confirm")),
+        KeyBinding::new("cmd-enter", SendReview, Some("Confirm")),
         KeyBinding::new("tab", NextEvent, Some("Confirm")),
         KeyBinding::new("ctrl-tab", NextReview, None),
         KeyBinding::new("ctrl-shift-tab", PrevReview, None),
@@ -309,6 +311,6 @@ mod tests {
         let before = pairs.len();
         pairs.dedup();
         assert_eq!(before, pairs.len(), "a key is bound twice in one context");
-        assert_eq!(before, 27, "every action in the actions! set needs a binding");
+        assert_eq!(before, 28, "every action in the actions! set needs a binding");
     }
 }
