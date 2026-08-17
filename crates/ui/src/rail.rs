@@ -101,6 +101,7 @@ mod tests {
                 added: 12,
                 removed: 3,
                 files: Vec::new(),
+                head_sha: "abc".into(),
             },
         );
         assert_eq!(rail_label(&r, 0), "#1  +12 -3  done");
@@ -132,6 +133,7 @@ mod tests {
                 added: 12,
                 removed: 3,
                 files: vec![("a.rs".into(), 1), ("b.rs".into(), 1), ("c.rs".into(), 1)],
+                head_sha: "abc".into(),
             },
         );
         assert_eq!(rail_label(&r, 2), "#1  +12 -3  2 left");
@@ -146,6 +148,7 @@ mod tests {
                 added: 12,
                 removed: 3,
                 files: vec![("a.rs".into(), 1)],
+                head_sha: "abc".into(),
             },
         );
         assert_eq!(rail_label(&r, 0), "#1  +12 -3  done");
@@ -167,6 +170,7 @@ mod tests {
                 added: 12,
                 removed: 3,
                 files: vec![("a.rs".into(), 1)],
+                head_sha: "abc".into(),
             },
         );
         r.rebased = true;
@@ -182,6 +186,7 @@ mod tests {
                 added: 12,
                 removed: 3,
                 files: vec![("a.rs".into(), 1)],
+                head_sha: "abc".into(),
             },
         );
         assert!(!rail_label(&r, 1).contains("rebased"));

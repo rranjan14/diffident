@@ -124,6 +124,53 @@ impl Comment {
     }
 }
 
+/// Every local draft in the window, per review.
+///
+/// Held outside the diff for the same reason reviewed marks are: the diff is
+/// evicted from the resident set while a draft the reviewer spent a minute
+/// writing must not be.
+#[derive(Debug, Default)]
+pub struct Drafts {
+    by_review: std::collections::HashMap<u32, Vec<Comment>>,
+}
+
+impl Drafts {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Newest last, so the UI reads them in the order they were written.
+    pub fn add(&mut self, review: u32, comment: Comment) {
+        self.by_review.entry(review).or_default().push(comment);
+    }
+
+    pub fn for_review(&self, review: u32) -> &[Comment] {
+        self.by_review.get(&review).map_or(&[], Vec::as_slice)
+    }
+
+    pub fn count(&self, review: u32) -> usize {
+        self.for_review(review).len()
+    }
+
+    /// Drop one draft, reporting whether it was there.
+    ///
+    /// Refuses anything GitHub already knows about: that copy is a mirror, so
+    /// deleting it here would only hide a comment that still exists on the PR.
+    pub fn remove(&mut self, review: u32, id: Uuid) -> bool {
+        let Some(drafts) = self.by_review.get_mut(&review) else {
+            return false;
+        };
+        let before = drafts.len();
+        drafts.retain(|c| c.id != id || !c.is_editable());
+        drafts.len() != before
+    }
+
+    /// Replace one review's drafts, as loaded from disk.
+    pub fn restore(&mut self, review: u32, comments: Vec<Comment>) {
+        self.by_review.insert(review, comments);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +243,78 @@ mod tests {
         let c = Comment::new_line("a.rs", 3, Side::Old, "why?");
         let back: Comment = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
         assert_eq!(back, c);
+    }
+}
+
+#[cfg(test)]
+mod draft_tests {
+    use super::*;
+
+    #[test]
+    fn a_review_starts_with_no_drafts() {
+        let d = Drafts::new();
+        assert_eq!(d.count(7), 0);
+        assert!(d.for_review(7).is_empty());
+    }
+
+    #[test]
+    fn drafts_are_kept_in_authoring_order() {
+        let mut d = Drafts::new();
+        d.add(7, Comment::new_review("first"));
+        d.add(7, Comment::new_review("second"));
+        let bodies: Vec<&str> = d.for_review(7).iter().map(|c| c.body.as_str()).collect();
+        assert_eq!(bodies, ["first", "second"]);
+    }
+
+    #[test]
+    fn drafts_are_scoped_to_one_review() {
+        // Two PRs in a stack are reviewed side by side; a draft written on one
+        // must not show up on the other.
+        let mut d = Drafts::new();
+        d.add(7, Comment::new_review("on seven"));
+        assert_eq!(d.count(7), 1);
+        assert_eq!(d.count(9), 0);
+    }
+
+    #[test]
+    fn a_local_draft_can_be_deleted() {
+        let mut d = Drafts::new();
+        let c = Comment::new_review("oops");
+        let id = c.id;
+        d.add(7, c);
+        assert!(d.remove(7, id));
+        assert_eq!(d.count(7), 0);
+    }
+
+    #[test]
+    fn deleting_an_unknown_draft_reports_nothing_removed() {
+        let mut d = Drafts::new();
+        d.add(7, Comment::new_review("keep"));
+        assert!(!d.remove(7, Uuid::new_v4()));
+        assert!(!d.remove(9, Uuid::new_v4()), "and not for an unknown review");
+        assert_eq!(d.count(7), 1);
+    }
+
+    #[test]
+    fn a_comment_github_already_has_cannot_be_deleted_locally() {
+        // The local copy is a mirror of what is published. Dropping it here
+        // would hide a comment that still exists on the PR.
+        let mut d = Drafts::new();
+        let mut c = Comment::new_review("published");
+        c.lifecycle = Lifecycle::Submitted;
+        let id = c.id;
+        d.add(7, c);
+        assert!(!d.remove(7, id));
+        assert_eq!(d.count(7), 1);
+    }
+
+    #[test]
+    fn drafts_round_trip_for_persistence() {
+        let mut d = Drafts::new();
+        d.add(7, Comment::new_review("written before the restart"));
+        let saved = d.for_review(7).to_vec();
+        let mut fresh = Drafts::new();
+        fresh.restore(7, saved.clone());
+        assert_eq!(fresh.for_review(7), saved.as_slice());
     }
 }

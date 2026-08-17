@@ -16,6 +16,12 @@ actions!(
         Bottom,
         ToggleReviewed,
         NextUnreviewed,
+        LineComment,
+        FileComment,
+        ReviewComment,
+        ToggleVisual,
+        DeleteDraft,
+        ClearSelection,
         NextReview,
         PrevReview,
         Refresh,
@@ -49,9 +55,21 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-g", Bottom, Some("Diff")),
         KeyBinding::new("r", ToggleReviewed, Some("Diff")),
         KeyBinding::new("tab", NextUnreviewed, Some("Diff")),
+        KeyBinding::new("c", LineComment, Some("Diff")),
+        KeyBinding::new("shift-c", FileComment, Some("Diff")),
+        // §8 assigns no key for a review-level comment. `s` for "summary" is
+        // free and is what GitHub calls the review body.
+        KeyBinding::new("s", ReviewComment, Some("Diff")),
+        KeyBinding::new("v", ToggleVisual, Some("Diff")),
+        // §8 spells this `dd`. A chord needs its own pending-key state machine
+        // and this is one keystroke either way, so it is `x`.
+        KeyBinding::new("x", DeleteDraft, Some("Diff")),
+        KeyBinding::new("escape", ClearSelection, Some("Diff")),
         KeyBinding::new("ctrl-tab", NextReview, None),
         KeyBinding::new("ctrl-shift-tab", PrevReview, None),
-        KeyBinding::new("shift-r", Refresh, None),
+        // Scoped to Diff rather than global: an unscoped binding still fires
+        // while the composer has focus, so typing a capital R would refresh.
+        KeyBinding::new("shift-r", Refresh, Some("Diff")),
     ]
 }
 
@@ -274,6 +292,6 @@ mod tests {
         let before = keys.len();
         keys.dedup();
         assert_eq!(before, keys.len(), "a key is bound twice");
-        assert_eq!(before, 15, "every action in the actions! set needs a binding");
+        assert_eq!(before, 21, "every action in the actions! set needs a binding");
     }
 }
