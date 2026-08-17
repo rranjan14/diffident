@@ -52,7 +52,7 @@ pub fn author_label(author: &str) -> String {
 /// there or it is not, and dimming one would hide a change still waiting to be
 /// accepted.
 pub fn comment_body(body: &str, theme: &Theme, muted: bool) -> impl IntoElement {
-    let prose = if muted { theme.text_muted } else { theme.text };
+    let prose = if muted { theme.text_secondary } else { theme.text_primary };
     div()
         .flex()
         .flex_col()
@@ -64,8 +64,8 @@ pub fn comment_body(body: &str, theme: &Theme, muted: bool) -> impl IntoElement 
                 .rounded_md()
                 .bg(theme.added_bg)
                 .border_l_2()
-                .border_color(theme.added)
-                .text_color(theme.added)
+                .border_color(theme.added_fg)
+                .text_color(theme.added_fg)
                 .child(SharedString::from(text)),
         }))
 }
@@ -74,7 +74,7 @@ pub fn comment_body(body: &str, theme: &Theme, muted: bool) -> impl IntoElement 
 pub fn author_line(author: &str, theme: &Theme) -> impl IntoElement {
     div()
         .text_sm()
-        .text_color(theme.text_muted)
+        .text_color(theme.text_secondary)
         .child(SharedString::from(author_label(author)))
 }
 

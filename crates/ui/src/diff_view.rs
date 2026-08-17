@@ -157,8 +157,8 @@ impl DiffView {
             Row::FileHeader { file_ix } => div()
                 .px_2()
                 .h(px(theme.line_height))
-                .bg(theme.header_bg)
-                .text_color(theme.text)
+                .bg(theme.surface_raised)
+                .text_color(theme.text_primary)
                 .child(SharedString::from(
                     self.data.files[file_ix].display_path().to_string(),
                 ))
@@ -168,7 +168,7 @@ impl DiffView {
                 div()
                     .px_2()
                     .h(px(theme.line_height))
-                    .text_color(theme.text_muted)
+                    .text_color(theme.text_secondary)
                     .child(SharedString::from(format!(
                         "@@ -{},{} +{},{} @@ {}",
                         h.old_start, h.old_count, h.new_start, h.new_count, h.section
@@ -184,9 +184,9 @@ impl DiffView {
                 let (bg, sigil) = match line.kind {
                     LineKind::Added => (theme.added_bg, "+"),
                     LineKind::Removed => (theme.removed_bg, "-"),
-                    LineKind::Context => (theme.bg, " "),
+                    LineKind::Context => (theme.surface, " "),
                 };
-                let style = theme.text_style();
+                let style = theme.code_style();
                 let ranges: Vec<(Range<usize>, HighlightStyle)> = self.data.highlights[ix]
                     .iter()
                     .map(|(r, c)| {
@@ -202,12 +202,12 @@ impl DiffView {
                 let code = div()
                     .flex()
                     .h(px(theme.line_height))
-                    .when(ix == self.cursor, |this| this.bg(theme.row_selected))
+                    .when(ix == self.cursor, |this| this.bg(theme.accent_soft))
                     .when(ix != self.cursor, |this| this.bg(bg))
                     .child(
                         div()
                             .w(px(48.))
-                            .text_color(theme.text_muted)
+                            .text_color(theme.text_secondary)
                             .child(SharedString::from(
                                 line.new_lineno
                                     .or(line.old_lineno)
@@ -241,8 +241,8 @@ impl DiffView {
             Row::Expander { hidden, .. } => div()
                 .px_2()
                 .h(px(theme.line_height))
-                .bg(theme.header_bg)
-                .text_color(theme.text_muted)
+                .bg(theme.surface_raised)
+                .text_color(theme.text_secondary)
                 .child(match hidden {
                     Some(n) => SharedString::from(format!("··· {n} unchanged lines")),
                     None => SharedString::from("··· expand to end of file"),
@@ -271,17 +271,17 @@ impl DiffView {
             .px_2()
             .py_1()
             .rounded_md()
-            .bg(theme.header_bg)
+            .bg(theme.surface_raised)
             .border_l_2()
             .border_color(if is_selected {
-                theme.text
+                theme.text_primary
             } else {
-                theme.border
+                theme.border_subtle
             })
             .child(
                 div()
                     .text_sm()
-                    .text_color(theme.text_muted)
+                    .text_color(theme.text_tertiary)
                     .child(SharedString::from(status.to_string())),
             )
             .children(crate::comment_view::thread_comments(
@@ -306,7 +306,7 @@ impl Render for DiffView {
         div()
             .relative()
             .size_full()
-            .bg(self.theme.bg)
+            .bg(self.theme.surface)
             .child(
                 list(
                     self.list.clone(),

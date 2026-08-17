@@ -62,8 +62,8 @@ pub fn scrollbar<V: 'static>(
         .right_0()
         .w(px(10.))
         .h(t.height)
-        .bg(theme.scrollbar_thumb)
-        .hover(|this| this.bg(theme.scrollbar_thumb_hover))
+        .bg(theme.border_strong)
+        .hover(|this| this.bg(theme.text_tertiary))
         .rounded_full()
         .child(
             canvas(|_, _, _| (), move |thumb_bounds, _, window, _| {

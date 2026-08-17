@@ -822,7 +822,7 @@ impl Workspace {
                 // does not shift what the reviewer typed.
                 let (before, after) = text.split_at(cur_col);
                 row.child(SharedString::from(before.to_string()))
-                    .child(div().w(px(1.5)).h(px(theme.line_height)).bg(theme.text))
+                    .child(div().w(px(1.5)).h(px(theme.line_height)).bg(theme.text_primary))
                     .child(SharedString::from(after.to_string()))
             } else {
                 row.child(SharedString::from(text.clone()))
@@ -849,12 +849,12 @@ impl Workspace {
             .w_full()
             .p_2()
             .border_t_1()
-            .border_color(theme.border)
-            .bg(theme.header_bg)
+            .border_color(theme.border_subtle)
+            .bg(theme.surface_raised)
             .child(
                 div()
                     .text_sm()
-                    .text_color(theme.text_muted)
+                    .text_color(theme.text_secondary)
                     .child(SharedString::from(match &composing.dest {
                         Destination::Draft(scope) => format!("comment on {}", scope_label(scope)),
                         Destination::Reply { on, .. } => format!("reply to {on}"),
@@ -870,7 +870,7 @@ impl Workspace {
             .child(
                 div()
                     .text_sm()
-                    .text_color(theme.text_muted)
+                    .text_color(theme.text_secondary)
                     .child(SharedString::from(match &composing.dest {
                         Destination::Draft(_) => "cmd-enter save · esc cancel",
                         // Not "save": this one leaves the machine the moment it
@@ -906,9 +906,9 @@ impl Workspace {
                             .child(
                                 div()
                                     .text_color(if c.is_editable() {
-                                        theme.added
+                                        theme.added_fg
                                     } else {
-                                        theme.text_muted
+                                        theme.text_secondary
                                     })
                                     .child(SharedString::from(scope_label(&c.scope))),
                             )
@@ -917,7 +917,7 @@ impl Workspace {
                             // worked is the absence of an error.
                             .child(
                                 div()
-                                    .text_color(theme.text_muted)
+                                    .text_color(theme.text_secondary)
                                     .child(SharedString::from(c.lifecycle.label())),
                             ),
                     )
@@ -968,7 +968,7 @@ impl Workspace {
                     div()
                         .px_2()
                         .text_sm()
-                        .text_color(theme.text_muted)
+                        .text_color(theme.text_tertiary)
                         .child("threads not in this diff")
                         .into_any_element(),
                 );
@@ -985,7 +985,7 @@ impl Workspace {
                     .flex_col()
                     .gap_1()
                     .when(is_selected, |this| {
-                        this.bg(theme.row_selected).border_l_2().border_color(theme.text)
+                        this.bg(theme.accent_soft).border_l_2().border_color(theme.text_primary)
                     })
                     .px_2()
                     .py_1()
@@ -997,12 +997,12 @@ impl Workspace {
                             .text_sm()
                             .child(
                                 div()
-                                    .text_color(theme.text_muted)
+                                    .text_color(theme.text_secondary)
                                     .child(SharedString::from(where_)),
                             )
                             .child(
                                 div()
-                                    .text_color(theme.text_muted)
+                                    .text_color(theme.text_tertiary)
                                     .child(SharedString::from(status.to_string())),
                             ),
                     )
@@ -1017,7 +1017,7 @@ impl Workspace {
                     .px_2()
                     .py_1()
                     .text_sm()
-                    .text_color(theme.removed)
+                    .text_color(theme.removed_fg)
                     .child(SharedString::from(format!("could not load threads: {why}")))
                     .into_any_element(),
             );
@@ -1031,7 +1031,7 @@ impl Workspace {
                     .px_2()
                     .py_1()
                     .text_sm()
-                    .text_color(theme.text_muted)
+                    .text_color(theme.text_secondary)
                     .child("t/T select · shift-space resolve · a reply")
                     .into_any_element(),
             );
@@ -1413,7 +1413,7 @@ impl Workspace {
                         .py_1()
                         .child(
                             div()
-                                .text_color(if kept { theme.added } else { theme.text_muted })
+                                .text_color(if kept { theme.added_fg } else { theme.text_secondary })
                                 .child(SharedString::from(format!(
                                     "{} — {}",
                                     if kept { "move to summary" } else { "omit" },
@@ -1423,7 +1423,7 @@ impl Workspace {
                         .child(
                             div()
                                 .text_sm()
-                                .text_color(theme.text_muted)
+                                .text_color(theme.text_secondary)
                                 .child(SharedString::from(comment.body.clone())),
                         ),
                 );
@@ -1437,18 +1437,18 @@ impl Workspace {
             .w_full()
             .p_2()
             .border_t_1()
-            .border_color(theme.border)
-            .bg(theme.header_bg)
+            .border_color(theme.border_subtle)
+            .bg(theme.surface_raised)
             .child(
                 div()
-                    .text_color(theme.text)
+                    .text_color(theme.text_primary)
                     .child("these comments no longer fit the diff"),
             )
             .children(rows)
             .child(
                 div()
                     .text_sm()
-                    .text_color(theme.text_muted)
+                    .text_color(theme.text_secondary)
                     .child("space toggle · enter continue · esc cancel"),
             )
     }
@@ -1482,17 +1482,17 @@ impl Workspace {
             .w_full()
             .p_2()
             .border_t_1()
-            .border_color(theme.border)
-            .bg(theme.header_bg)
+            .border_color(theme.border_subtle)
+            .bg(theme.surface_raised)
             .child(
                 div()
-                    .text_color(theme.text)
+                    .text_color(theme.text_primary)
                     .child(SharedString::from(format!("submit as: {kind}"))),
             )
             .child(
                 div()
                     .text_sm()
-                    .text_color(theme.text_muted)
+                    .text_color(theme.text_secondary)
                     .child(SharedString::from(format!(
                         "{sending} line comment(s), {rescued} moved into the body"
                     ))),
@@ -1500,18 +1500,18 @@ impl Workspace {
             .children((!body_preview.is_empty()).then(|| {
                 div()
                     .text_sm()
-                    .text_color(theme.text_muted)
+                    .text_color(theme.text_secondary)
                     .child(SharedString::from(body_preview))
             }))
             .children(refused.map(|r| {
                 div()
-                    .text_color(theme.removed)
+                    .text_color(theme.removed_fg)
                     .child(SharedString::from(r.reason().to_string()))
             }))
             .child(
                 div()
                     .text_sm()
-                    .text_color(theme.text_muted)
+                    .text_color(theme.text_secondary)
                     .child("tab change kind · cmd-enter send · esc cancel"),
             )
     }
@@ -1623,8 +1623,8 @@ impl Render for Workspace {
                         .py_1()
                         .text_sm()
                         .rounded_md()
-                        .hover(|this| this.bg(theme.row_hover))
-                        .child(div().text_color(theme.text_muted).child(SharedString::from(
+                        .hover(|this| this.bg(theme.surface_raised))
+                        .child(div().text_color(theme.text_secondary).child(SharedString::from(
                             format!(
                                 "{} {} {}",
                                 reviewed_marker(is_read),
@@ -1638,12 +1638,12 @@ impl Render for Workspace {
                                 .gap_1()
                                 .child(
                                     div()
-                                        .text_color(theme.added)
+                                        .text_color(theme.added_fg)
                                         .child(SharedString::from(format!("+{}", entry.added))),
                                 )
                                 .child(
                                     div()
-                                        .text_color(theme.removed)
+                                        .text_color(theme.removed_fg)
                                         .child(SharedString::from(format!("-{}", entry.removed))),
                                 ),
                         )
@@ -1711,9 +1711,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &SendReview, window, cx| this.send_review(window, cx)))
             .flex()
             .size_full()
-            .bg(theme.bg)
-            .font_family(theme.font_family)
-            .text_color(theme.text)
+            .bg(theme.surface)
+            .font_family(theme.font_code)
+            .text_color(theme.text_primary)
             .child(
                 div()
                     .flex()
@@ -1723,13 +1723,13 @@ impl Render for Workspace {
                     .h_full()
                     .p_2()
                     .border_r_1()
-                    .border_color(theme.border)
+                    .border_color(theme.border_subtle)
                     .child(
                         div()
                             .px_3()
                             .py_2()
                             .text_sm()
-                            .text_color(theme.text_muted)
+                            .text_color(theme.text_tertiary)
                             .child(SharedString::from(format!(
                                 "{} — {} reviews",
                                 self.repo.slug(),
@@ -1747,7 +1747,7 @@ impl Render for Workspace {
                     .h_full()
                     .p_2()
                     .border_r_1()
-                    .border_color(theme.border)
+                    .border_color(theme.border_subtle)
                     .children(file_rows)
             }))
             .children({
@@ -1762,12 +1762,12 @@ impl Render for Workspace {
                         .h_full()
                         .p_2()
                         .border_l_1()
-                        .border_color(theme.border)
+                        .border_color(theme.border_subtle)
                         .children((!drafts.is_empty()).then(|| {
                             div()
                                 .px_2()
                                 .text_sm()
-                                .text_color(theme.text_muted)
+                                .text_color(theme.text_tertiary)
                                 .child("drafts")
                         }))
                         .children(drafts)
@@ -1790,9 +1790,9 @@ impl Render for Workspace {
                             .px_2()
                             .py_1()
                             .border_t_1()
-                            .border_color(theme.border)
+                            .border_color(theme.border_subtle)
                             .text_sm()
-                            .text_color(theme.removed)
+                            .text_color(theme.removed_fg)
                             .child(SharedString::from(e))
                     }))
                     .children(match &self.mode {
@@ -1806,14 +1806,14 @@ impl Render for Workspace {
                     let active = self.active.and_then(|ix| self.reviews.get(ix));
                     let (text, colour) = match placeholder(active) {
                         Placeholder::NothingSelected => {
-                            (SharedString::from("select a review"), theme.text_muted)
+                            (SharedString::from("select a review"), theme.text_secondary)
                         }
                         Placeholder::Loading => {
-                            (SharedString::from("loading…"), theme.text_muted)
+                            (SharedString::from("loading…"), theme.text_secondary)
                         }
                         Placeholder::Failed(message) => (
                             SharedString::from(format!("failed: {message}")),
-                            theme.removed,
+                            theme.removed_fg,
                         ),
                     };
                     div()
