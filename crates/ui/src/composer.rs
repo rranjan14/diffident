@@ -588,6 +588,19 @@ mod key_tests {
     }
 
     #[test]
+    fn space_is_typed_and_never_treated_as_a_named_key() {
+        // Since Phase 7c, `space` in the `Diff` context resolves a thread on
+        // GitHub. The composer is protected by holding no key context while it
+        // has focus, but this is the other half: space must decode as text.
+        // A reply is mostly spaces, so a regression here would not be subtle —
+        // it would write to someone else's pull request once per word.
+        assert_eq!(
+            key_action("space", Some(" "), false, false),
+            Key::Insert(" ".into())
+        );
+    }
+
+    #[test]
     fn a_key_with_no_character_is_ignored() {
         assert_eq!(key_action("f13", None, false, false), Key::Ignore);
         assert_eq!(key_action("shift", Some(""), false, false), Key::Ignore);
