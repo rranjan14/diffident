@@ -10,6 +10,7 @@ pub mod residency;
 pub mod scrollbar;
 pub mod submit;
 pub mod theme;
+pub mod threads;
 pub mod workspace;
 
 pub use workspace::Workspace;

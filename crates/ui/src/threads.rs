@@ -1,0 +1,241 @@
+//! Putting other people's review threads onto our row model (§7).
+
+use diffident_diff::{DiffFile, LineKind, Row};
+use diffident_forge::threads::ReviewThread;
+
+/// A thread, and where it landed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Placed<'a> {
+    pub thread: &'a ReviewThread,
+    /// Index of the diff row this thread sits under, or `None` when the code it
+    /// referred to is not in this diff.
+    pub row: Option<usize>,
+}
+
+impl Placed<'_> {
+    /// Whether this thread has somewhere to render inline.
+    pub fn is_anchored(&self) -> bool {
+        self.row.is_some()
+    }
+}
+
+/// Place every thread against the current diff.
+///
+/// Order is preserved, and every input thread comes back — an unplaceable one
+/// is returned with `row: None` rather than dropped. A thread silently missing
+/// from the UI is worse than one shown out of place: the reviewer would answer
+/// a question they never saw.
+pub fn place<'a>(
+    threads: &'a [ReviewThread],
+    files: &[DiffFile],
+    rows: &[Row],
+) -> Vec<Placed<'a>> {
+    threads
+        .iter()
+        .map(|thread| Placed {
+            thread,
+            row: row_for(thread, files, rows),
+        })
+        .collect()
+}
+
+/// The row index a thread anchors to, if the diff still contains its line.
+fn row_for(thread: &ReviewThread, files: &[DiffFile], rows: &[Row]) -> Option<usize> {
+    // An outdated thread's only anchor is where it was originally left, which
+    // by definition is not in this diff. Trying to place it would land it on
+    // whatever line happens to carry that number now — a different piece of
+    // code entirely.
+    if thread.is_outdated {
+        return None;
+    }
+    let line = thread.line?;
+    rows.iter().position(|row| {
+        let Row::Line {
+            file_ix,
+            hunk_ix,
+            line_ix,
+        } = *row
+        else {
+            return false;
+        };
+        let Some(file) = files.get(file_ix) else {
+            return false;
+        };
+        if file.display_path() != thread.path {
+            return false;
+        }
+        let Some(diff_line) = file.hunks.get(hunk_ix).and_then(|h| h.lines.get(line_ix)) else {
+            return false;
+        };
+        if thread.on_old_side {
+            diff_line.kind != LineKind::Added && diff_line.old_lineno == Some(line)
+        } else {
+            diff_line.kind != LineKind::Removed && diff_line.new_lineno == Some(line)
+        }
+    })
+}
+
+/// Threads grouped by the row they sit under, for a renderer walking rows.
+///
+/// Returns pairs rather than a map so the caller can iterate in row order
+/// without sorting, which is what a virtualised list wants.
+pub fn by_row<'a>(placed: &[Placed<'a>]) -> Vec<(usize, Vec<&'a ReviewThread>)> {
+    let mut out: Vec<(usize, Vec<&'a ReviewThread>)> = Vec::new();
+    for p in placed {
+        let Some(row) = p.row else { continue };
+        match out.iter_mut().find(|(r, _)| *r == row) {
+            Some((_, list)) => list.push(p.thread),
+            None => out.push((row, vec![p.thread])),
+        }
+    }
+    out.sort_by_key(|(row, _)| *row);
+    out
+}
+
+/// How many threads could not be placed — the count the UI needs to tell the
+/// reviewer that conversations exist which it cannot show beside the code.
+pub fn unanchored(placed: &[Placed<'_>]) -> usize {
+    placed.iter().filter(|p| !p.is_anchored()).count()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use diffident_diff::{parser::parse, rows::build_rows};
+    use diffident_forge::threads::{ReviewThread, ThreadComment};
+
+    // a.rs: line 1 context, old line 2 removed, new line 2 added.
+    const DIFF: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n";
+
+    fn thread(path: &str, line: Option<u32>, old_side: bool) -> ReviewThread {
+        ReviewThread {
+            id: "PRRT_1".into(),
+            path: path.into(),
+            line,
+            original_line: line,
+            on_old_side: old_side,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![ThreadComment {
+                id: "PRRC_1".into(),
+                author: "octocat".into(),
+                body: "nit".into(),
+            }],
+        }
+    }
+
+    fn fixture() -> (Vec<DiffFile>, Vec<Row>) {
+        let files = parse(DIFF);
+        let rows = build_rows(&files);
+        (files, rows)
+    }
+
+    #[test]
+    fn a_thread_on_an_added_line_lands_on_that_row() {
+        let (files, rows) = fixture();
+        let t = [thread("a.rs", Some(2), false)];
+        let placed = place(&t, &files, &rows);
+        let row = placed[0].row.expect("should anchor");
+        assert!(matches!(rows[row], Row::Line { .. }));
+        assert!(placed[0].is_anchored());
+    }
+
+    #[test]
+    fn a_thread_on_the_old_side_lands_on_the_removed_line() {
+        // Old line 2 was deleted; a thread left on it still belongs there.
+        let (files, rows) = fixture();
+        let t = [thread("a.rs", Some(2), true)];
+        let placed = place(&t, &files, &rows);
+        let row = placed[0].row.expect("should anchor to the pre-image line");
+        let Row::Line { file_ix, hunk_ix, line_ix } = rows[row] else {
+            panic!("expected a line row");
+        };
+        assert_eq!(files[file_ix].hunks[hunk_ix].lines[line_ix].kind, LineKind::Removed);
+    }
+
+    #[test]
+    fn a_thread_on_a_line_not_in_the_diff_is_returned_unplaced_not_dropped() {
+        // Dropping it would mean the reviewer answers a question they never saw.
+        let (files, rows) = fixture();
+        let t = [thread("a.rs", Some(999), false)];
+        let placed = place(&t, &files, &rows);
+        assert_eq!(placed.len(), 1);
+        assert_eq!(placed[0].row, None);
+        assert_eq!(unanchored(&placed), 1);
+    }
+
+    #[test]
+    fn a_thread_on_a_file_not_in_the_diff_is_unplaced() {
+        let (files, rows) = fixture();
+        let t = [thread("elsewhere.rs", Some(1), false)];
+        assert_eq!(place(&t, &files, &rows)[0].row, None);
+    }
+
+    #[test]
+    fn an_outdated_thread_is_never_placed_even_when_the_number_still_exists() {
+        // Its only anchor is where it *was*; that line number now carries
+        // different code, and putting the thread there would misattribute it.
+        let (files, rows) = fixture();
+        let mut t = thread("a.rs", None, false);
+        t.original_line = Some(1);
+        t.is_outdated = true;
+        let threads = vec![t];
+        let placed = place(&threads, &files, &rows);
+        assert_eq!(placed[0].row, None);
+    }
+
+    #[test]
+    fn the_old_and_new_sides_of_one_line_number_are_different_places() {
+        let (files, rows) = fixture();
+        let new_t = vec![thread("a.rs", Some(2), false)];
+        let old_t = vec![thread("a.rs", Some(2), true)];
+        let new_side = place(&new_t, &files, &rows)[0].row;
+        let old_side = place(&old_t, &files, &rows)[0].row;
+        assert_ne!(new_side, old_side, "side must disambiguate the anchor");
+    }
+
+    #[test]
+    fn every_thread_comes_back_in_the_order_it_arrived() {
+        let (files, rows) = fixture();
+        let t = [
+            thread("a.rs", Some(999), false),
+            thread("a.rs", Some(2), false),
+            thread("nope.rs", Some(1), false),
+        ];
+        let placed = place(&t, &files, &rows);
+        assert_eq!(placed.len(), 3);
+        assert_eq!(unanchored(&placed), 2);
+    }
+
+    #[test]
+    fn several_threads_on_one_line_are_grouped_under_it() {
+        let (files, rows) = fixture();
+        let t = [thread("a.rs", Some(2), false), thread("a.rs", Some(2), false)];
+        let grouped = by_row(&place(&t, &files, &rows));
+        assert_eq!(grouped.len(), 1, "one row");
+        assert_eq!(grouped[0].1.len(), 2, "both threads under it");
+    }
+
+    #[test]
+    fn grouping_comes_back_in_row_order() {
+        // A renderer walking rows top to bottom must not have to sort.
+        let (files, rows) = fixture();
+        let t = [thread("a.rs", Some(2), false), thread("a.rs", Some(1), false)];
+        let grouped = by_row(&place(&t, &files, &rows));
+        assert!(grouped.windows(2).all(|w| w[0].0 < w[1].0));
+    }
+
+    #[test]
+    fn unplaced_threads_are_left_out_of_the_grouping() {
+        let (files, rows) = fixture();
+        let t = [thread("a.rs", Some(999), false)];
+        assert!(by_row(&place(&t, &files, &rows)).is_empty());
+    }
+
+    #[test]
+    fn no_threads_places_nothing_and_reports_nothing_unplaced() {
+        let (files, rows) = fixture();
+        let placed = place(&[], &files, &rows);
+        assert!(placed.is_empty());
+        assert_eq!(unanchored(&placed), 0);
+    }
+}
