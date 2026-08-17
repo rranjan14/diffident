@@ -33,6 +33,7 @@ actions!(
         Refresh,
         NextThread,
         PrevThread,
+        ToggleResolved,
     ]
 );
 
@@ -91,6 +92,9 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // `t` for thread; both are free in the Diff context.
         KeyBinding::new("t", NextThread, Some("Diff")),
         KeyBinding::new("shift-t", PrevThread, Some("Diff")),
+        // `space` is already the resolver's toggle key; in the Diff context it
+        // is free, and "toggle the thing under the cursor" is the same gesture.
+        KeyBinding::new("space", ToggleResolved, Some("Diff")),
     ]
 }
 
@@ -317,6 +321,6 @@ mod tests {
         let before = pairs.len();
         pairs.dedup();
         assert_eq!(before, pairs.len(), "a key is bound twice in one context");
-        assert_eq!(before, 30, "every action in the actions! set needs a binding");
+        assert_eq!(before, 31, "every action in the actions! set needs a binding");
     }
 }

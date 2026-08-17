@@ -731,7 +731,7 @@ impl Workspace {
             } else if t.is_outdated {
                 "outdated"
             } else {
-                ""
+                "open"
             };
             out.push(
                 div()
@@ -921,6 +921,53 @@ impl Workspace {
         let count = self.threads.get(&number).map_or(0, Vec::len);
         self.thread_cursor = crate::threads::step(count, self.thread_cursor, delta);
         cx.notify();
+    }
+
+    /// `space` — resolve the selected thread, or unresolve it if it is already
+    /// resolved.
+    ///
+    /// Nothing local changes until GitHub confirms. §9 requires a failed write
+    /// to leave state untouched, and one landing closure that only mutates on
+    /// `Ok` is the whole of that guarantee.
+    fn toggle_resolved(&mut self, cx: &mut Context<Self>) {
+        let Some(number) = self.active_number() else {
+            return;
+        };
+        let Some((id, want)) = self
+            .threads
+            .get(&number)
+            .and_then(|ts| crate::threads::selected(ts, self.thread_cursor))
+            .map(|t| (t.id.clone(), !t.is_resolved))
+        else {
+            return;
+        };
+        let target = id.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { diffident_forge::threads::set_resolved(&Gh, &id, want) })
+                .await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        // Found by id, not by index: the cursor may have moved
+                        // during the round trip.
+                        if let Some(t) = this
+                            .threads
+                            .get_mut(&number)
+                            .and_then(|ts| ts.iter_mut().find(|t| t.id == target))
+                        {
+                            t.is_resolved = want;
+                        }
+                        this.error = None;
+                    }
+                    Err(e) => this.error = Some(format!("could not update the thread: {e}")),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// `ctrl-tab` / `ctrl-shift-tab`: move to the adjacent review in the rail.
@@ -1374,6 +1421,7 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &NextThread, _, cx| this.step_thread(1, cx)))
             .on_action(cx.listener(|this, _: &PrevThread, _, cx| this.step_thread(-1, cx)))
+            .on_action(cx.listener(|this, _: &ToggleResolved, _, cx| this.toggle_resolved(cx)))
             .on_action(cx.listener(|this, _: &NextReview, _, cx| this.step_review(1, cx)))
             .on_action(cx.listener(|this, _: &PrevReview, _, cx| this.step_review(-1, cx)))
             .on_action(cx.listener(|this, _: &Submit, window, cx| this.begin_submit(window, cx)))
