@@ -438,18 +438,28 @@ impl Workspace {
                 .or_else(|| scope_for_file(view.files(), view.rows(), view.cursor))
         };
         let Some(here) = here else { return };
-        let target = self
+        let at_cursor: Vec<&Comment> = self
             .drafts
             .for_review(number)
             .iter()
             .rev()
-            .find(|c| c.scope == here && c.is_editable())
-            .map(|c| c.id);
-        if let Some(id) = target {
-            self.drafts.remove(number, id);
-            self.persist(number);
-            cx.notify();
+            .filter(|c| c.scope == here)
+            .collect();
+        let target = at_cursor.iter().find(|c| c.is_editable()).map(|c| c.id);
+        match target {
+            Some(id) => {
+                self.drafts.remove(number, id);
+                self.persist(number);
+                self.error = None;
+            }
+            // There is a comment here, but GitHub has it. Saying so beats a
+            // key that silently does nothing, which reads as a broken app.
+            None if !at_cursor.is_empty() => {
+                self.error = Some("that comment is already on GitHub — it cannot be deleted here".into());
+            }
+            None => return,
         }
+        cx.notify();
     }
 
     /// A keystroke while the composer has focus.
@@ -627,13 +637,35 @@ impl Workspace {
                     .py_1()
                     .child(
                         div()
+                            .flex()
+                            .justify_between()
+                            .gap_2()
                             .text_sm()
-                            .text_color(theme.added)
-                            .child(SharedString::from(scope_label(&c.scope))),
+                            .child(
+                                div()
+                                    .text_color(if c.is_editable() {
+                                        theme.added
+                                    } else {
+                                        theme.text_muted
+                                    })
+                                    .child(SharedString::from(scope_label(&c.scope))),
+                            )
+                            // Without this a sent comment looks exactly like an
+                            // unsent one, and the only signal that a submit
+                            // worked is the absence of an error.
+                            .child(
+                                div()
+                                    .text_color(theme.text_muted)
+                                    .child(SharedString::from(c.lifecycle.label())),
+                            ),
                     )
                     .child(
                         div()
-                            .text_color(theme.text)
+                            .text_color(if c.is_editable() {
+                                theme.text
+                            } else {
+                                theme.text_muted
+                            })
                             .child(SharedString::from(c.body.clone())),
                     )
                     .into_any_element()
@@ -836,7 +868,7 @@ impl Workspace {
         let sub = sub.clone();
         let drafts = self.drafts.for_review(number).to_vec();
 
-        let (json, sent, landed, head) = {
+        let (json, sent, landed) = {
             let view = diff.read(cx);
             let pre = preflight(&drafts, view.files());
             if sub.check(&pre).is_err() {
@@ -858,10 +890,8 @@ impl Workspace {
                 sub.payload(&head, &pre).to_string(),
                 sub.sent_ids(&pre),
                 sub.landed(),
-                head,
             )
         };
-        let _ = head;
 
         self.leave_mode(window, cx);
         let repo = self.repo.clone();
