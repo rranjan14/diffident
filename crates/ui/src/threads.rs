@@ -97,6 +97,27 @@ pub fn by_row<'a>(placed: &[Placed<'a>]) -> Vec<(usize, Vec<&'a ReviewThread>)> 
 pub fn unanchored(placed: &[Placed<'_>]) -> usize {
     placed.iter().filter(|p| !p.is_anchored()).count()
 }
+/// The thread `delta` steps away, wrapping, with a stale cursor clamped first.
+///
+/// Wrapping rather than clamping is deliberate and differs from diff
+/// navigation: this is a short selector list, not a 10,000-row document.
+pub fn step(count: usize, cursor: usize, delta: isize) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    let here = cursor.min(count - 1) as isize;
+    (here + delta).rem_euclid(count as isize) as usize
+}
+
+/// The thread under the cursor, clamped.
+///
+/// Clamped rather than bounds-checked because threads can vanish under the
+/// cursor when a review reloads, and doing nothing at all in that case reads
+/// as a broken key.
+pub fn selected(threads: &[ReviewThread], cursor: usize) -> Option<&ReviewThread> {
+    threads.get(cursor.min(threads.len().saturating_sub(1)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +250,52 @@ mod tests {
         let (files, rows) = fixture();
         let t = [thread("a.rs", Some(999), false)];
         assert!(by_row(&place(&t, &files, &rows)).is_empty());
+    }
+
+    #[test]
+    fn stepping_moves_one_thread_at_a_time() {
+        assert_eq!(step(3, 0, 1), 1);
+        assert_eq!(step(3, 1, -1), 0);
+    }
+
+    #[test]
+    fn stepping_wraps_at_both_ends() {
+        // Unlike diff navigation, which clamps: a 400-file diff makes wrapping
+        // disorienting, but a list of three threads is a selector, and a
+        // selector that stops dead at the end feels broken.
+        assert_eq!(step(3, 2, 1), 0);
+        assert_eq!(step(3, 0, -1), 2);
+    }
+
+    #[test]
+    fn stepping_over_no_threads_stays_at_zero_rather_than_dividing_by_zero() {
+        assert_eq!(step(0, 0, 1), 0);
+        assert_eq!(step(0, 5, -1), 0);
+    }
+
+    #[test]
+    fn a_cursor_past_the_end_is_clamped_rather_than_wrapped_when_stepping() {
+        // Threads can disappear under the cursor on reload. Wrapping a stale
+        // cursor would land somewhere unrelated; clamping first keeps the next
+        // press predictable.
+        assert_eq!(step(3, 99, 1), 0, "clamp to 2, then step to 0");
+    }
+
+    #[test]
+    fn the_selected_thread_is_the_one_under_the_cursor() {
+        let t = [thread("a.rs", Some(1), false), thread("b.rs", Some(2), false)];
+        assert_eq!(selected(&t, 1).map(|t| t.path.as_str()), Some("b.rs"));
+    }
+
+    #[test]
+    fn a_stale_cursor_selects_the_last_thread_rather_than_nothing() {
+        let t = [thread("a.rs", Some(1), false)];
+        assert_eq!(selected(&t, 99).map(|t| t.path.as_str()), Some("a.rs"));
+    }
+
+    #[test]
+    fn nothing_is_selected_when_there_are_no_threads() {
+        assert!(selected(&[], 0).is_none());
     }
 
     #[test]

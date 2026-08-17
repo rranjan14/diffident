@@ -31,6 +31,11 @@ actions!(
         NextReview,
         PrevReview,
         Refresh,
+        NextThread,
+        PrevThread,
+        ToggleResolved,
+        ReplyToThread,
+        Suggest,
     ]
 );
 
@@ -85,6 +90,19 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // Scoped to Diff rather than global: an unscoped binding still fires
         // while the composer has focus, so typing a capital R would refresh.
         KeyBinding::new("shift-r", Refresh, Some("Diff")),
+        // §8 assigns no keys for thread navigation — Phase 7 is net-new (§7).
+        // `t` for thread; both are free in the Diff context.
+        KeyBinding::new("t", NextThread, Some("Diff")),
+        KeyBinding::new("shift-t", PrevThread, Some("Diff")),
+        // `space` is already the resolver's toggle key; in the Diff context it
+        // is free, and "toggle the thing under the cursor" is the same gesture.
+        KeyBinding::new("space", ToggleResolved, Some("Diff")),
+        // `a` for answer. `r` is taken by ToggleReviewed and `shift-r` by
+        // Refresh, both long-standing.
+        KeyBinding::new("a", ReplyToThread, Some("Diff")),
+        // §8 has no key for this — suggestions are net-new (§7). `p` for
+        // propose; `s` is the review-level comment and `c`/`C` are taken.
+        KeyBinding::new("p", Suggest, Some("Diff")),
     ]
 }
 
@@ -311,6 +329,6 @@ mod tests {
         let before = pairs.len();
         pairs.dedup();
         assert_eq!(before, pairs.len(), "a key is bound twice in one context");
-        assert_eq!(before, 28, "every action in the actions! set needs a binding");
+        assert_eq!(before, 33, "every action in the actions! set needs a binding");
     }
 }
