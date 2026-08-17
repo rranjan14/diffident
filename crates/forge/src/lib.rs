@@ -90,6 +90,12 @@ pub trait Forge {
     /// address — a GraphQL global id already carries repo and PR.
     fn set_resolved(&self, thread_id: &str, resolved: bool) -> Result<(), gh::GhError>;
 
+    /// A file's contents at a commit, for expanding collapsed context (§5).
+    ///
+    /// Returns the raw bytes as text. Binary files are the caller's problem to
+    /// avoid asking about — a diff already knows which of its files are binary.
+    fn file_at(&self, repo: &Repo, path: &str, sha: &str) -> Result<String, gh::GhError>;
+
     /// Post a reply, returning the comment the host created so the caller can
     /// render it without a second fetch.
     fn reply(

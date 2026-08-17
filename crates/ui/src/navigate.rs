@@ -43,6 +43,7 @@ actions!(
         PrevMatch,
         OpenPalette,
         ToggleSplit,
+        ExpandContext,
     ]
 );
 
@@ -133,6 +134,9 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // window manager. Free in the Diff context, and near enough to the
         // other layout key (⌘B) to feel related.
         KeyBinding::new("\\", ToggleSplit, Some("Diff")),
+        // §8: "Enter expand context". Free in the Diff context — enter is only
+        // otherwise bound inside the resolver.
+        KeyBinding::new("enter", ExpandContext, Some("Diff")),
     ]
 }
 
@@ -359,7 +363,7 @@ mod tests {
         let before = pairs.len();
         pairs.dedup();
         assert_eq!(before, pairs.len(), "a key is bound twice in one context");
-        assert_eq!(before, 40, "every action in the actions! set needs a binding");
+        assert_eq!(before, 41, "every action in the actions! set needs a binding");
     }
 
     #[test]

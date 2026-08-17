@@ -1357,6 +1357,105 @@ impl Workspace {
         crate::palette::commands(cx.all_action_names(), &crate::navigate::key_bindings())
     }
 
+    /// `enter` — reveal the collapsed lines under the cursor (§8).
+    ///
+    /// Fetches the file at the head commit, fills the gap, then **rebuilds**
+    /// rows and highlights from the edited file rather than splicing them.
+    /// Splicing would mean holding four index spaces in agreement by hand —
+    /// rows, highlights, the cursor, and every anchor `place()` computed — and
+    /// getting one wrong misattributes a comment silently. Rebuilding makes
+    /// them consistent by construction, at the cost of re-highlighting, which
+    /// happens on the background thread exactly as it does on first load.
+    fn expand_context(&mut self, cx: &mut Context<Self>) {
+        let (Some(number), Some(data), Some(diff)) =
+            (self.active_number(), self.data().cloned(), self.diff())
+        else {
+            return;
+        };
+        let cursor = diff.read(cx).cursor;
+        let Some(&diffident_diff::Row::Expander {
+            file_ix,
+            before_hunk_ix,
+            ..
+        }) = data.rows.get(cursor)
+        else {
+            return self.refuse("put the cursor on a collapsed region to expand it", cx);
+        };
+        let Some(file) = data.files.get(file_ix) else { return };
+        let path = file.display_path().to_string();
+        let head = self
+            .reviews
+            .iter()
+            .find(|r| r.id.number == number)
+            .and_then(|r| match &r.state {
+                LoadState::Ready { head_sha, .. } => Some(head_sha.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+
+        let forge = self.forge.clone();
+        let repo = self.repo.clone();
+        let theme = self.theme.clone();
+        let wrap = diff.read(cx).wrap();
+        let split = diff.read(cx).is_split();
+        // The head the expansion was fetched at, kept for re-admitting the
+        // rebuilt review under the same key.
+        let admit_head = head.clone();
+        cx.spawn(async move |this, cx| {
+            let fetched = cx
+                .background_executor()
+                .spawn({
+                    let data = data.clone();
+                    async move {
+                        let source = forge.file_at(&repo, &path, &head)?;
+                        let mut files = data.files.clone();
+                        let changed = files
+                            .get_mut(file_ix)
+                            .is_some_and(|f| diffident_diff::expand_gap(f, before_hunk_ix, &source));
+                        if !changed {
+                            return Ok(None);
+                        }
+                        let rows = diffident_diff::rows::build_rows(&files);
+                        let highlights = diffident_highlight::rows::for_rows(&files, &rows);
+                        Ok::<_, diffident_forge::gh::GhError>(Some(ReviewData {
+                            files,
+                            rows,
+                            highlights,
+                        }))
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                match fetched {
+                    Ok(Some(rebuilt)) => {
+                        let data = Arc::new(rebuilt);
+                        let view = cx.new(|_| {
+                            let mut v = DiffView::new(data.clone(), theme);
+                            v.set_wrap(wrap);
+                            v.set_split(split);
+                            // Land on the first revealed line rather than
+                            // wherever the old index now points: the reviewer
+                            // pressed this key to look at that code.
+                            v.scroll_to(cursor);
+                            v
+                        });
+                        this.residency.admit(number, (data, view), &admit_head);
+                        this.residency.activate(number);
+                        // Row indices moved, so anything holding one is stale.
+                        this.apply_matches(Vec::new(), cx);
+                        this.sync_threads_for(number, cx);
+                        this.error = None;
+                    }
+                    Ok(None) => this.error = Some("nothing left to expand there".into()),
+                    Err(e) => this.error = Some(format!("could not expand: {e}")),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// `\` — toggle side-by-side.
     ///
     /// Applies to the review on screen only, like `w`: a layout chosen for one
@@ -1999,6 +2098,7 @@ impl Render for Workspace {
                 this.sidebar_collapsed = !this.sidebar_collapsed;
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &ExpandContext, _, cx| this.expand_context(cx)))
             .on_action(cx.listener(|this, _: &ToggleSplit, _, cx| this.toggle_split(cx)))
             .on_action(cx.listener(|this, _: &OpenPalette, window, cx| {
                 this.open_palette(window, cx)
@@ -2209,6 +2309,15 @@ mod tests {
         d
     }
 
+    /// [`workspace_with_diff`], over a caller-supplied diff.
+    fn workspace_with_named_diff<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        forge: GitHub<FakeGh>,
+        diff: &str,
+    ) -> (Entity<Workspace>, &'a mut gpui::VisualTestContext) {
+        workspace_from(cx, forge, Vec::new(), diff)
+    }
+
     /// A `Workspace` with one review resident, drawn, and ready for keystrokes.
     ///
     /// Seeded directly rather than driven through a fetch: these tests are
@@ -2220,7 +2329,17 @@ mod tests {
         forge: GitHub<FakeGh>,
         threads: Vec<ReviewThread>,
     ) -> (Entity<Workspace>, &mut gpui::VisualTestContext) {
-        let files = diffident_diff::parser::parse(&many_rows());
+        let d = many_rows();
+        workspace_from(cx, forge, threads, &d)
+    }
+
+    fn workspace_from<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        forge: GitHub<FakeGh>,
+        threads: Vec<ReviewThread>,
+        diff: &str,
+    ) -> (Entity<Workspace>, &'a mut gpui::VisualTestContext) {
+        let files = diffident_diff::parser::parse(diff);
         let rows = diffident_diff::rows::build_rows(&files);
         let data = Arc::new(crate::loader::ReviewData {
             highlights: vec![Vec::new(); rows.len()],
@@ -2248,7 +2367,12 @@ mod tests {
                 is_draft: false,
                 head_sha: "abc".into(),
                 rebased: false,
-                state: LoadState::Idle,
+                state: LoadState::Ready {
+                    added: 0,
+                    removed: 0,
+                    files: Vec::new(),
+                    head_sha: "abc".into(),
+                },
             });
             this.active = Some(0);
             this.threads.insert(1, Ok(threads));
@@ -2602,6 +2726,66 @@ mod tests {
             first,
             "`N` came back"
         );
+    }
+
+    /// §8's context expansion, end to end through the real keymap.
+    ///
+    /// The property under test is the one the design exists to protect: after
+    /// expanding, `rows` and `highlights` still agree. They are rebuilt from
+    /// the edited file rather than spliced, so they cannot disagree — this
+    /// asserts that the rebuild actually happened and produced a consistent
+    /// pair, which a splice would have had to maintain by hand.
+    #[gpui::test]
+    fn enter_expands_a_collapsed_region_and_keeps_rows_and_highlights_in_step(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        // A diff touching only line 5, so lines 1-4 are collapsed above it.
+        let gapped = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -5,1 +5,1 @@\n-5\n+five\n";
+        let source = "l1\nl2\nl3\nl4\nfive\n";
+        let forge = GitHub::new(FakeGh::new().with(
+            "api repos/o/r/contents/a.rs?ref=abc -H Accept: application/vnd.github.raw",
+            source,
+        ));
+        let (workspace, cx) = workspace_with_named_diff(cx, forge, gapped);
+
+        let before = workspace.read_with(cx, |this, cx| {
+            let v = this.diff().unwrap();
+            v.read(cx).rows().len()
+        });
+
+        // Put the cursor on the expander, then press enter.
+        let expander = workspace.read_with(cx, |this, cx| {
+            let v = this.diff().unwrap();
+            v.read(cx)
+                .rows()
+                .iter()
+                .position(|r| matches!(r, diffident_diff::Row::Expander { .. }))
+                .expect("a collapsed region above the hunk")
+        });
+        workspace.update(cx, |this, cx| {
+            if let Some(v) = this.diff() {
+                v.update(cx, |v, _| v.scroll_to(expander));
+            }
+        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |this, cx| {
+            let v = this.diff().unwrap();
+            let v = v.read(cx);
+            assert!(
+                v.rows().len() > before,
+                "lines were revealed: {} -> {}",
+                before,
+                v.rows().len()
+            );
+            assert!(
+                v.rows().iter().any(|r| r
+                    .line(v.files())
+                    .is_some_and(|l| l.text == "l1")),
+                "and they are the real file's lines"
+            );
+        });
     }
 
     /// §8's side-by-side, through the real keymap.
