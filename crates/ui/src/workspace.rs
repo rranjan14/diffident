@@ -75,6 +75,9 @@ pub struct Workspace {
     /// Threads already on each PR, keyed by number. Outlives the diff in
     /// `residency` for the same reason drafts do.
     threads: std::collections::HashMap<u32, Vec<diffident_forge::threads::ReviewThread>>,
+    /// Why threads are missing for a review, when they are. Kept apart from
+    /// `error` (the rail's) because this one is about one pane, not the app.
+    threads_error: std::collections::HashMap<u32, String>,
     /// What the window is doing. One value, so two full-window states cannot
     /// both be active — which three separate `Option`s would eventually allow.
     mode: Mode,
@@ -107,6 +110,7 @@ impl Workspace {
             store: Store::new(default_root()),
             drafts: Drafts::new(),
             threads: std::collections::HashMap::new(),
+            threads_error: std::collections::HashMap::new(),
             mode: Mode::Browsing,
             visual_anchor: None,
             composer_focus: cx.focus_handle(),
@@ -294,6 +298,10 @@ impl Workspace {
             .restore(number, saved.comments_at(&loaded.head_sha).to_vec());
         self.reviewed.restore(number, saved.reviewed);
         self.threads.insert(number, loaded.threads.clone());
+        match &loaded.threads_error {
+            Some(why) => self.threads_error.insert(number, why.clone()),
+            None => self.threads_error.remove(&number),
+        };
 
         let theme = self.theme.clone();
         let row = self.residency.recall_cursor(number, loaded.rows.len());
@@ -691,8 +699,13 @@ impl Workspace {
         let (Some(number), Some(diff)) = (self.active_number(), self.diff()) else {
             return Vec::new();
         };
-        let Some(threads) = self.threads.get(&number) else {
-            return Vec::new();
+        // The notice must render even with no threads: an empty pane reads as
+        // "nobody has reviewed this", which is a different and wrong statement.
+        let failed = self.threads_error.get(&number).cloned();
+        let threads = match self.threads.get(&number) {
+            Some(t) => t.as_slice(),
+            None if failed.is_none() => return Vec::new(),
+            None => &[],
         };
         let view = diff.read(cx);
         let placed = crate::threads::place(threads, view.files(), view.rows());
@@ -760,6 +773,18 @@ impl Workspace {
                                     .child(SharedString::from(c.body.clone())),
                             )
                     }))
+                    .into_any_element(),
+            );
+        }
+
+        if let Some(why) = failed {
+            out.push(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_sm()
+                    .text_color(theme.removed)
+                    .child(SharedString::from(format!("could not load threads: {why}")))
                     .into_any_element(),
             );
         }

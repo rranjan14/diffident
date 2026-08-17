@@ -17,6 +17,14 @@ pub struct LoadedReview {
     /// Conversations already on the pull request (§7). Empty when nobody has
     /// reviewed it yet, which is not an error.
     pub threads: Vec<ReviewThread>,
+    /// Why threads could not be fetched, when they could not.
+    ///
+    /// A failed thread fetch must not cost the reviewer the diff. GitHub
+    /// rate-limits GraphQL separately from REST, and a token can carry the
+    /// scopes for one and not the other — so a failure here is routine while
+    /// `pr diff` is working perfectly. Threads are supplementary; the diff is
+    /// the point of opening the review.
+    pub threads_error: Option<String>,
     /// Index-parallel with `rows`. Computed here, on the caller's background
     /// thread, because it is by far the most expensive step — ~530ms on a
     /// 10k-row diff. Doing it in `DiffView::new` froze the window for that long.
@@ -51,7 +59,15 @@ pub fn load_review<F: Forge + Sync, R: GhRunner + Sync>(
             thr.join().expect("threads thread panicked"),
         )
     });
-    let (detail, text, threads) = (detail?, text?, threads?);
+    // The diff and the detail are fatal — without them there is nothing to
+    // show. Threads degrade instead: the reviewer gets the code, and is told
+    // why the conversation is missing rather than being shown an empty pane
+    // that looks like nobody has commented.
+    let (detail, text) = (detail?, text?);
+    let (threads, threads_error) = match threads {
+        Ok(threads) => (threads, None),
+        Err(e) => (Vec::new(), Some(e.to_string())),
+    };
     let files = parser::parse(&text);
     let rows = rows::build_rows(&files);
 
@@ -79,6 +95,7 @@ pub fn load_review<F: Forge + Sync, R: GhRunner + Sync>(
         added,
         removed,
         threads,
+        threads_error,
     })
 }
 
@@ -228,6 +245,53 @@ mod tests {
         let loaded = load_review(&github, github.runner(), &repo(), 7).unwrap();
         assert_eq!(loaded.threads.len(), 1);
         assert_eq!(loaded.threads[0].comments[0].author, "octocat");
+    }
+
+    #[test]
+    fn a_failed_thread_fetch_still_gives_the_reviewer_the_diff() {
+        // GitHub rate-limits GraphQL separately from REST. Losing the diff
+        // because the conversation could not be fetched would make the PR
+        // unopenable while `pr diff` was working fine.
+        let gh = FakeGh::new()
+            .with(DETAIL_ARGS, DETAIL_JSON)
+            .with("pr diff 7 --repo o/r --color never", DIFF);
+        // no graphql response registered -> the thread fetch fails
+        let github = GitHub::new(gh);
+        let loaded = load_review(&github, github.runner(), &repo(), 7).expect("diff must survive");
+        assert_eq!(loaded.files.len(), 1, "the diff is still here");
+        assert!(loaded.threads.is_empty());
+    }
+
+    #[test]
+    fn a_failed_thread_fetch_says_why_rather_than_looking_like_no_comments() {
+        // An empty pane with no explanation reads as "nobody has reviewed
+        // this", which is a different and wrong statement.
+        let gh = FakeGh::new()
+            .with(DETAIL_ARGS, DETAIL_JSON)
+            .with("pr diff 7 --repo o/r --color never", DIFF);
+        let github = GitHub::new(gh);
+        let loaded = load_review(&github, github.runner(), &repo(), 7).unwrap();
+        assert!(loaded.threads_error.is_some(), "the reason must survive");
+    }
+
+    #[test]
+    fn a_successful_thread_fetch_reports_no_error() {
+        let gh = FakeGh::new()
+            .with(DETAIL_ARGS, DETAIL_JSON)
+            .with("pr diff 7 --repo o/r --color never", DIFF)
+            .with("api graphql --input -", THREADS_JSON);
+        let github = GitHub::new(gh);
+        let loaded = load_review(&github, github.runner(), &repo(), 7).unwrap();
+        assert_eq!(loaded.threads.len(), 1);
+        assert!(loaded.threads_error.is_none());
+    }
+
+    #[test]
+    fn a_failed_diff_fetch_is_still_fatal() {
+        // Threads are supplementary; the diff is the point of opening a review.
+        let gh = FakeGh::new().with(DETAIL_ARGS, DETAIL_JSON);
+        let github = GitHub::new(gh);
+        assert!(load_review(&github, github.runner(), &repo(), 7).is_err());
     }
 
     #[test]
