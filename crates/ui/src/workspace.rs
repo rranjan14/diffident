@@ -5,7 +5,7 @@
 
 use crate::diff_view::DiffView;
 use crate::file_list::{file_entries, reviewed_marker, status_glyph};
-use crate::loader::{LoadedReview, list_reviews, load_review};
+use crate::loader::{LoadedReview, ReviewData, list_reviews, load_review};
 use crate::navigate::*;
 use crate::rail::rail_row;
 use crate::composer::{Key, TextBuffer, key_action, scope_for_file, scope_for_line, scope_for_range};
@@ -73,7 +73,12 @@ pub struct Workspace {
     /// keeping a few alive makes switching instant — the whole point of one
     /// window holding N reviews (§1). Bounded because a large diff is tens of
     /// MB (§10).
-    residency: Residency<Entity<DiffView>>,
+    /// The parsed diff and its view, evicted together.
+    ///
+    /// The `Arc<ReviewData>` lives *here* rather than in a map of its own so
+    /// that eviction still frees it — a large diff is tens of MB (§10), and a
+    /// clone parked anywhere longer-lived would make this LRU decorative.
+    residency: Residency<(Arc<ReviewData>, Entity<DiffView>)>,
     /// Which files the reviewer has marked read, per PR. Outlives the diffs in
     /// `residency` on purpose — evicting a diff must not forget your progress.
     reviewed: Reviewed,
@@ -248,7 +253,20 @@ impl Workspace {
 
     /// The diff for the active review, if it is resident.
     fn diff(&self) -> Option<Entity<DiffView>> {
-        self.residency.get(self.active_number()?).cloned()
+        self.residency
+            .get(self.active_number()?)
+            .map(|(_, view)| view.clone())
+    }
+
+    /// The active review's parsed diff, without borrowing the view.
+    ///
+    /// This is the point of sharing it: reading files or rows no longer needs a
+    /// `Context` just to reach through a GPUI entity, so the callers below are
+    /// plain `&self` functions that a test can call directly.
+    fn data(&self) -> Option<&Arc<ReviewData>> {
+        self.residency
+            .get(self.active_number()?)
+            .map(|(data, _)| data)
     }
 
     /// Open a review, fetching its diff only if it is not already resident.
@@ -330,6 +348,7 @@ impl Workspace {
                 added: loaded.added,
                 removed: loaded.removed,
                 files: loaded
+                    .data
                     .files
                     .iter()
                     .map(|f| (f.display_path().to_string(), f.content_hash()))
@@ -352,13 +371,15 @@ impl Workspace {
         };
 
         let theme = self.theme.clone();
-        let row = self.residency.recall_cursor(number, loaded.rows.len());
+        let row = self.residency.recall_cursor(number, loaded.data.rows.len());
+        let data = loaded.data.clone();
         let view = cx.new(|_| {
-            let mut v = DiffView::new(loaded.files, loaded.rows, loaded.highlights, theme);
+            let mut v = DiffView::new(data, theme);
             v.scroll_to(row);
             v
         });
-        self.residency.admit(number, view, &loaded.head_sha);
+        self.residency
+            .admit(number, (loaded.data, view), &loaded.head_sha);
 
         // Keep whatever the reviewer is actually looking at at the
         // most-recently-used end. Open four reviews, click back to the first,
@@ -1149,7 +1170,7 @@ impl Workspace {
     /// thread list forever, and since the side pane stopped listing anchored
     /// threads that hid every conversation on them without a trace.
     fn sync_threads_for(&mut self, number: u32, cx: &mut Context<Self>) {
-        let Some(diff) = self.residency.get(number).cloned() else {
+        let Some((data, diff)) = self.residency.get(number).cloned() else {
             return;
         };
         let threads = self.threads.get(&number).cloned().unwrap_or_default();
@@ -1159,8 +1180,10 @@ impl Workspace {
             .then(|| crate::threads::selected(&threads, self.thread_cursor))
             .flatten()
             .map(|t| t.id.clone());
+        // Grouping reads the diff from the shared handle, not from the view, so
+        // the only thing left inside the update is the write itself.
+        let groups = crate::threads::inline_groups(&threads, &data.files, &data.rows);
         diff.update(cx, |view, cx| {
-            let groups = crate::threads::inline_groups(&threads, view.files(), view.rows());
             view.set_threads(groups, selected);
             cx.notify();
         });
@@ -1271,14 +1294,11 @@ impl Workspace {
     /// reviewer dismiss an empty resolver would be a dialog that says
     /// "nothing to decide".
     fn begin_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(number), Some(diff)) = (self.active_number(), self.diff()) else {
+        let (Some(number), Some(data)) = (self.active_number(), self.data().cloned()) else {
             return;
         };
         let drafts = self.drafts.for_review(number).to_vec();
-        let has_unmappable = {
-            let view = diff.read(cx);
-            !preflight(&drafts, view.files()).unmappable.is_empty()
-        };
+        let has_unmappable = !preflight(&drafts, &data.files).unmappable.is_empty();
         let submission = Submission::new(Event::Comment);
         let next = if has_unmappable {
             Mode::Resolving(submission)
@@ -1291,17 +1311,14 @@ impl Workspace {
     /// `space` in the resolver — flip the highlighted draft between being
     /// rescued into the body and being left behind.
     fn toggle_resolution(&mut self, cx: &mut Context<Self>) {
-        let (Some(number), Some(diff)) = (self.active_number(), self.diff()) else {
+        let (Some(number), Some(data)) = (self.active_number(), self.data().cloned()) else {
             return;
         };
         let drafts = self.drafts.for_review(number).to_vec();
-        let first_unmappable = {
-            let view = diff.read(cx);
-            preflight(&drafts, view.files())
-                .unmappable
-                .first()
-                .map(|(c, _)| c.id)
-        };
+        let first_unmappable = preflight(&drafts, &data.files)
+            .unmappable
+            .first()
+            .map(|(c, _)| c.id);
         if let (Mode::Resolving(sub), Some(id)) = (&mut self.mode, first_unmappable) {
             sub.toggle(id);
             cx.notify();
@@ -1344,15 +1361,14 @@ impl Workspace {
         let Mode::Confirming(sub) = &self.mode else {
             return;
         };
-        let (Some(number), Some(diff)) = (self.active_number(), self.diff()) else {
+        let (Some(number), Some(data)) = (self.active_number(), self.data().cloned()) else {
             return;
         };
         let sub = sub.clone();
         let drafts = self.drafts.for_review(number).to_vec();
 
         let (json, sent, landed) = {
-            let view = diff.read(cx);
-            let pre = preflight(&drafts, view.files());
+            let pre = preflight(&drafts, &data.files);
             if sub.check(&pre).is_err() {
                 return; // the confirm step is already showing why
             }
@@ -1403,13 +1419,12 @@ impl Workspace {
     }
 
     /// The resolver: every draft that will not map, why, and what happens to it.
-    fn render_resolver(&self, sub: &Submission, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_resolver(&self, sub: &Submission) -> impl IntoElement {
         let theme = self.theme.clone();
         let mut rows = Vec::new();
-        if let (Some(number), Some(diff)) = (self.active_number(), self.diff()) {
+        if let (Some(number), Some(data)) = (self.active_number(), self.data()) {
             let drafts = self.drafts.for_review(number).to_vec();
-            let view = diff.read(cx);
-            for (comment, reason) in preflight(&drafts, view.files()).unmappable {
+            for (comment, reason) in preflight(&drafts, &data.files).unmappable {
                 let kept = sub.resolution(comment.id) == Resolution::MoveToSummary;
                 rows.push(
                     div()
@@ -1797,7 +1812,7 @@ impl Render for Workspace {
                     .child(div().flex_1().min_h(px(0.)).child(diff))
                     .children(match &self.mode {
                         Mode::Composing(c) => Some(self.render_composer(c, cx).into_any_element()),
-                        Mode::Resolving(s) => Some(self.render_resolver(s, cx).into_any_element()),
+                        Mode::Resolving(s) => Some(self.render_resolver(s).into_any_element()),
                         Mode::Confirming(s) => Some(self.render_confirm(s, cx).into_any_element()),
                         _ => None,
                     })
@@ -1830,7 +1845,8 @@ impl Render for Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{Placeholder, Workspace, placeholder};
+    use super::{DiffView, Entity, Placeholder, Residency, Theme, Workspace, placeholder};
+    use gpui::AppContext as _;
     use diffident_forge::gh::FakeGh;
     use diffident_forge::github::GitHub;
     use diffident_forge::threads::{ReviewThread, ThreadComment};
@@ -1853,6 +1869,50 @@ mod tests {
                 body: "nit".into(),
             }],
         }
+    }
+
+    /// The LRU is what bounds memory: a large diff is tens of MB (§10), and
+    /// four stay resident. Sharing the parsed diff behind an `Arc` put a second
+    /// handle in play, so this pins the thing that would otherwise rot in
+    /// silence — evicting a review must actually release its diff, not just
+    /// drop one of two references to it. If a clone ever gets parked in a
+    /// longer-lived map, the app keeps every diff it has ever opened and
+    /// nothing else fails.
+    #[gpui::test]
+    fn evicting_a_review_releases_its_diff(cx: &mut gpui::TestAppContext) {
+        use crate::loader::ReviewData;
+        let mut residency: Residency<(Arc<ReviewData>, Entity<DiffView>)> =
+            Residency::new(super::RESIDENT);
+        let first = Arc::new(ReviewData {
+            files: Vec::new(),
+            rows: Vec::new(),
+            highlights: Vec::new(),
+        });
+        let watch = Arc::downgrade(&first);
+
+        for n in 0..=super::RESIDENT as u32 {
+            let data = if n == 0 {
+                first.clone()
+            } else {
+                Arc::new(ReviewData {
+                    files: Vec::new(),
+                    rows: Vec::new(),
+                    highlights: Vec::new(),
+                })
+            };
+            let view = cx.new(|_| DiffView::new(data.clone(), Theme::dark()));
+            residency.admit(n, (data, view), "head");
+        }
+        drop(first);
+        // gpui reclaims a dropped entity during `flush_effects`, and dropping
+        // the last handle does not by itself queue an effect — so force one.
+        // In the running app every frame does this; here nothing else would.
+        cx.update(|_| {});
+
+        assert!(
+            watch.upgrade().is_none(),
+            "the evicted review's diff is still alive — the residency bound is decorative"
+        );
     }
 
     /// §7: "a failed submit leaves everything at LocalDraft" — the same rule

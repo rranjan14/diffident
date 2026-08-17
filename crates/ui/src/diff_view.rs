@@ -1,8 +1,9 @@
 use crate::scrollbar::scrollbar;
+use crate::loader::ReviewData;
 use crate::theme::Theme;
+use std::sync::Arc;
 use diffident_diff::{DiffFile, LineKind, Row};
 use diffident_forge::threads::ReviewThread;
-use diffident_highlight::Highlights;
 use gpui::{
     Bounds, Context, HighlightStyle, IntoElement, ListAlignment, ListState, ParentElement, Pixels,
     Render, SharedString, StyledText, Window, div, list, prelude::*, px, rgb,
@@ -17,9 +18,10 @@ use std::ops::Range;
 /// row's height vary, which is what lets a thread render inline under the
 /// line it replies to (§3, §7).
 pub struct DiffView {
-    files: Vec<DiffFile>,
-    rows: Vec<Row>,
-    highlights: Vec<Highlights>,
+    /// The parsed diff, shared with `Workspace` rather than owned here.
+    /// Immutable for the view's whole life; see `ReviewData`'s doc for why the
+    /// `Arc` must not outlive its residency entry.
+    data: Arc<ReviewData>,
     /// The list's own state. Owns scroll position and per-row measurements.
     list: ListState,
     theme: Theme,
@@ -41,14 +43,16 @@ impl DiffView {
     /// produces it on a background thread. Deliberately not computed here —
     /// this constructor runs on the foreground, and highlighting a 10k-row diff
     /// takes ~530ms, which froze the window for exactly that long.
-    pub fn new(files: Vec<DiffFile>, rows: Vec<Row>, highlights: Vec<Highlights>, theme: Theme) -> Self {
-        debug_assert_eq!(highlights.len(), rows.len(), "highlights must be row-parallel");
-        let rows_len = rows.len();
+    pub fn new(data: Arc<ReviewData>, theme: Theme) -> Self {
+        debug_assert_eq!(
+            data.highlights.len(),
+            data.rows.len(),
+            "highlights must be row-parallel"
+        );
+        let rows_len = data.rows.len();
         let line_height = theme.line_height;
         Self {
-            files,
-            rows,
-            highlights,
+            data,
             // A uniform height *hint*, not a constraint: every row starts out
             // assumed to be one line tall, and real heights replace the hint as
             // rows are measured. `measure_all()` would instead lay out every
@@ -87,11 +91,11 @@ impl DiffView {
     }
 
     pub fn rows(&self) -> &[Row] {
-        &self.rows
+        &self.data.rows
     }
 
     pub fn files(&self) -> &[DiffFile] {
-        &self.files
+        &self.data.files
     }
 
     /// Replace the inline threads and tell the list which rows changed height.
@@ -118,7 +122,7 @@ impl DiffView {
         self.inline = groups;
         self.selected_thread = selected;
         for row in touched {
-            if row < self.rows.len() {
+            if row < self.data.rows.len() {
                 self.list.remeasure_items(row..row + 1);
             }
         }
@@ -135,7 +139,7 @@ impl DiffView {
 
     /// Scroll so `ix` is visible. Used by the file panel and by navigation.
     pub fn scroll_to(&mut self, ix: usize) {
-        self.cursor = ix.min(self.rows.len().saturating_sub(1));
+        self.cursor = ix.min(self.data.rows.len().saturating_sub(1));
         self.list.scroll_to_reveal_item(self.cursor);
     }
 
@@ -149,18 +153,18 @@ impl DiffView {
     }
 
     fn render_row(&self, ix: usize, theme: &Theme) -> impl IntoElement + use<> {
-        match self.rows[ix] {
+        match self.data.rows[ix] {
             Row::FileHeader { file_ix } => div()
                 .px_2()
                 .h(px(theme.line_height))
                 .bg(theme.header_bg)
                 .text_color(theme.text)
                 .child(SharedString::from(
-                    self.files[file_ix].display_path().to_string(),
+                    self.data.files[file_ix].display_path().to_string(),
                 ))
                 .into_any_element(),
             Row::HunkHeader { file_ix, hunk_ix } => {
-                let h = &self.files[file_ix].hunks[hunk_ix];
+                let h = &self.data.files[file_ix].hunks[hunk_ix];
                 div()
                     .px_2()
                     .h(px(theme.line_height))
@@ -176,14 +180,14 @@ impl DiffView {
                 hunk_ix,
                 line_ix,
             } => {
-                let line = &self.files[file_ix].hunks[hunk_ix].lines[line_ix];
+                let line = &self.data.files[file_ix].hunks[hunk_ix].lines[line_ix];
                 let (bg, sigil) = match line.kind {
                     LineKind::Added => (theme.added_bg, "+"),
                     LineKind::Removed => (theme.removed_bg, "-"),
                     LineKind::Context => (theme.bg, " "),
                 };
                 let style = theme.text_style();
-                let ranges: Vec<(Range<usize>, HighlightStyle)> = self.highlights[ix]
+                let ranges: Vec<(Range<usize>, HighlightStyle)> = self.data.highlights[ix]
                     .iter()
                     .map(|(r, c)| {
                         (
@@ -360,6 +364,18 @@ mod tests {
 
     const RUST: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,3 +1,3 @@\n fn main() {}\n-let x = 1;\n+let y = 2;\n";
 
+    /// The parsed fixture, in the shared shape the view now takes.
+    fn data() -> Arc<ReviewData> {
+        let files = parse(RUST);
+        let rows = build_rows(&files);
+        let highlights = vec![Vec::new(); rows.len()];
+        Arc::new(ReviewData {
+            files,
+            rows,
+            highlights,
+        })
+    }
+
     #[test]
     fn a_freshly_built_view_reports_a_zero_viewport_rather_than_a_stale_one() {
         // Regression: `bounds` used to be a field initialised to
@@ -367,10 +383,7 @@ mod tests {
         // *forever* and thumb() returned None on every frame — the scrollbar
         // was never drawn. Reading it from the scroll handle means the value
         // is zero only until the first layout, not permanently.
-        let files = parse(RUST);
-        let rows = build_rows(&files);
-        let hl = vec![Vec::new(); rows.len()];
-        let view = DiffView::new(files, rows, hl, Theme::dark());
+        let view = DiffView::new(data(), Theme::dark());
         assert_eq!(view.viewport().size.height, px(0.), "pre-layout");
         assert_eq!(
             view.rows_per_half_page(),
@@ -385,12 +398,10 @@ mod tests {
         // total is exact. Once threads render inline this stops being the rule
         // and becomes just the starting point — the list replaces each hint
         // with a real measurement as the row is drawn.
-        let files = parse(RUST);
-        let rows = build_rows(&files);
         let theme = Theme::dark();
-        let expected = px(rows.len() as f32 * theme.line_height);
-        let hl = vec![Vec::new(); rows.len()];
-        let view = DiffView::new(files, rows, hl, theme);
+        let d = data();
+        let expected = px(d.rows.len() as f32 * theme.line_height);
+        let view = DiffView::new(d, theme);
         assert_eq!(view.content_height(), expected);
     }
 
@@ -421,11 +432,9 @@ mod tests {
     /// `run_until_parked`.
     #[gpui::test]
     fn a_view_can_be_created_as_an_entity_in_a_test_app(cx: &mut gpui::TestAppContext) {
-        let files = parse(RUST);
-        let rows = build_rows(&files);
-        let row_count = rows.len();
-        let hl = vec![Vec::new(); row_count];
-        let view = cx.new(|_| DiffView::new(files, rows, hl, Theme::dark()));
+        let d = data();
+        let row_count = d.rows.len();
+        let view = cx.new(|_| DiffView::new(d, Theme::dark()));
         view.read_with(cx, |view, _| {
             assert_eq!(view.rows().len(), row_count);
             assert_eq!(view.cursor, 0);

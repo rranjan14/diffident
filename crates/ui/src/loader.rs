@@ -4,15 +4,34 @@ use diffident_forge::{Forge, Repo, gh::GhError, stack::stack_order};
 use diffident_highlight::{Highlights, rows::for_rows};
 use diffident_model::{LoadState, Review, ReviewId};
 
+/// The parsed diff, shared rather than owned by the view.
+///
+/// Written once by `load_review` and never mutated — the three vectors are
+/// index-parallel by construction (§3) and nothing may change one without the
+/// others. Behind an `Arc` so `Workspace` can read files and rows without
+/// borrowing the `DiffView` entity through a `Context`, which is what forced
+/// eighteen call sites to carry a `cx` they had no other use for.
+///
+/// **The `Arc` must be owned by the residency entry and nothing that outlives
+/// it.** Eviction is what bounds memory — a large diff is tens of MB (§10) —
+/// and a stray clone parked in a long-lived map would make the LRU decorative.
+pub struct ReviewData {
+    pub files: Vec<DiffFile>,
+    /// Index-parallel with what the diff list renders (§3).
+    pub rows: Vec<Row>,
+    /// Index-parallel with `rows`. Computed on the caller's background thread,
+    /// because it is by far the most expensive step — ~530ms on a 10k-row diff.
+    /// Doing it in `DiffView::new` froze the window for exactly that long.
+    pub highlights: Vec<Highlights>,
+}
+
 /// Everything one review needs to render, fetched and parsed.
 pub struct LoadedReview {
     /// The commit the diff was fetched at. Identifies *which* diff this is, so
     /// a force-push between visits can be detected (§6, and Phase 5's session key).
     pub head_sha: String,
     pub title: String,
-    pub files: Vec<DiffFile>,
-    /// Index-parallel with what the diff list renders (§3).
-    pub rows: Vec<Row>,
+    pub data: std::sync::Arc<ReviewData>,
     /// Conversations already on the pull request (§7). Empty when nobody has
     /// reviewed it yet, which is not an error.
     pub threads: Vec<ReviewThread>,
@@ -24,10 +43,6 @@ pub struct LoadedReview {
     /// `pr diff` is working perfectly. Threads are supplementary; the diff is
     /// the point of opening the review.
     pub threads_error: Option<String>,
-    /// Index-parallel with `rows`. Computed here, on the caller's background
-    /// thread, because it is by far the most expensive step — ~530ms on a
-    /// 10k-row diff. Doing it in `DiffView::new` froze the window for that long.
-    pub highlights: Vec<Highlights>,
     pub added: u32,
     pub removed: u32,
 }
@@ -87,9 +102,11 @@ pub fn load_review<F: Forge + Sync + ?Sized>(
     Ok(LoadedReview {
         head_sha: detail.head_ref_oid,
         title: detail.title,
-        files,
-        rows,
-        highlights,
+        data: std::sync::Arc::new(ReviewData {
+            files,
+            rows,
+            highlights,
+        }),
         added,
         removed,
         threads,
@@ -150,8 +167,8 @@ mod tests {
         let github = GitHub::new(gh);
         let loaded = load_review(&github, &repo(), 7).unwrap();
         assert_eq!(loaded.head_sha, "abc");
-        assert_eq!(loaded.files.len(), 1);
-        assert!(!loaded.rows.is_empty());
+        assert_eq!(loaded.data.files.len(), 1);
+        assert!(!loaded.data.rows.is_empty());
     }
 
     #[test]
@@ -164,7 +181,7 @@ mod tests {
             .with("api graphql --input -", THREADS_JSON);
         let github = GitHub::new(gh);
         let loaded = load_review(&github, &repo(), 7).unwrap();
-        assert_eq!(loaded.highlights.len(), loaded.rows.len());
+        assert_eq!(loaded.data.highlights.len(), loaded.data.rows.len());
     }
 
     #[test]
@@ -256,7 +273,7 @@ mod tests {
         // no graphql response registered -> the thread fetch fails
         let github = GitHub::new(gh);
         let loaded = load_review(&github, &repo(), 7).expect("diff must survive");
-        assert_eq!(loaded.files.len(), 1, "the diff is still here");
+        assert_eq!(loaded.data.files.len(), 1, "the diff is still here");
         assert!(loaded.threads.is_empty());
     }
 
