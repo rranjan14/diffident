@@ -345,21 +345,17 @@ impl DiffView {
         div()
             .flex()
             .flex_col()
-            .gap_1()
-            // Clears the 38+38 lineno columns and the 14px sigil, so
-            // the thread starts where the code does.
+            .gap(px(theme.s1))
+            // Aligned to the code column, not the window edge: the conversation
+            // belongs to the line, so it starts where the line's text does.
             .ml(px(90.))
-            .my_1()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .bg(theme.surface_raised)
+            .my(px(theme.s1))
+            .pl(px(theme.s3))
+            .py(px(theme.s2))
             .border_l_2()
-            .border_color(if is_selected {
-                theme.text_primary
-            } else {
-                theme.border_subtle
-            })
+            .border_color(if is_selected { theme.accent } else { theme.border_strong })
+            .bg(theme.surface_raised)
+            .rounded_r(px(theme.r_sm))
             .child(
                 div()
                     .text_sm()
