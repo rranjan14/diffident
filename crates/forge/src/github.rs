@@ -28,6 +28,25 @@ fn decode<T: serde::de::DeserializeOwned>(raw: &str) -> Result<T, GhError> {
 }
 
 impl<R: GhRunner> Forge for GitHub<R> {
+    fn current_repo(&self) -> Result<Repo, GhError> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Wire {
+            name_with_owner: String,
+        }
+        let raw = self
+            .runner
+            .run(&["repo", "view", "--json", "nameWithOwner"], None)?;
+        let wire: Wire = decode(&raw)?;
+        let (owner, name) = wire.name_with_owner.split_once('/').ok_or_else(|| {
+            GhError::BadOutput(format!("expected owner/name, got {:?}", wire.name_with_owner))
+        })?;
+        Ok(Repo {
+            owner: owner.to_string(),
+            name: name.to_string(),
+        })
+    }
+
     fn list_prs(&self, repo: &Repo) -> Result<Vec<PrSummary>, GhError> {
         let slug = repo.slug();
         let args = [
@@ -198,6 +217,35 @@ mod tests {
         // file genuinely had no lines there.
         let github = GitHub::new(FakeGh::new());
         assert!(github.file_at(&repo(), "gone.rs", "abc").is_err());
+    }
+
+    #[test]
+    fn the_repo_is_resolved_from_the_checkout_you_are_standing_in() {
+        // So `--repo` can be optional. gh reads the remote, follows forks to
+        // their parent and honours GH_REPO; parsing `git remote` ourselves
+        // would be more code and get those three cases wrong.
+        let gh = FakeGh::new().with(
+            "repo view --json nameWithOwner",
+            r#"{"nameWithOwner":"rranjan14/diffident"}"#,
+        );
+        let repo = GitHub::new(gh).current_repo().unwrap();
+        assert_eq!(repo.slug(), "rranjan14/diffident");
+    }
+
+    #[test]
+    fn a_directory_that_is_not_a_checkout_surfaces_rather_than_guessing() {
+        // Nothing registered -> the call fails, as gh does outside a repo.
+        // Guessing a repo here would silently show someone else's PRs.
+        assert!(GitHub::new(FakeGh::new()).current_repo().is_err());
+    }
+
+    #[test]
+    fn a_name_without_a_slash_is_rejected_rather_than_becoming_a_bad_slug() {
+        let gh = FakeGh::new().with("repo view --json nameWithOwner", r#"{"nameWithOwner":"oops"}"#);
+        assert!(matches!(
+            GitHub::new(gh).current_repo().unwrap_err(),
+            GhError::BadOutput(_)
+        ));
     }
 
     #[test]

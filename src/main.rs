@@ -1,16 +1,19 @@
 //! Orchestrator: parse args, open the window, wire the views. Nothing else.
 
-use diffident_forge::{Repo, gh::Gh, github::GitHub};
+use diffident_forge::{Forge as _, Repo, gh::Gh, github::GitHub};
 use diffident_session::config;
 use diffident_ui::{navigate, workspace::Workspace};
 use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 use gpui_platform::application;
 
-const USAGE: &str = "usage: diffident --repo <owner/name> [--pr <number>]";
+const USAGE: &str = "usage: diffident [--repo <owner/name>] [--pr <number>]";
 
 #[derive(Debug)]
 pub struct Args {
-    pub repo: Repo,
+    /// `None` means "whatever repo the working directory is in", resolved at
+    /// startup. Optional because requiring it means the repo you review is
+    /// whatever was last on the command line, not the one you are working in.
+    pub repo: Option<Repo>,
     /// Open this PR immediately instead of waiting for a rail click.
     pub pr: Option<u32>,
 }
@@ -33,17 +36,19 @@ impl Args {
                 other => return Err(format!("unknown argument {other:?}\n{USAGE}")),
             }
         }
-        let slug = repo.ok_or_else(|| format!("--repo is required\n{USAGE}"))?;
-        let (owner, name) = slug
-            .split_once('/')
-            .ok_or_else(|| format!("--repo must be owner/name, got {slug:?}\n{USAGE}"))?;
-        Ok(Args {
-            repo: Repo {
-                owner: owner.to_string(),
-                name: name.to_string(),
-            },
-            pr,
-        })
+        let repo = match repo {
+            None => None,
+            Some(slug) => {
+                let (owner, name) = slug
+                    .split_once('/')
+                    .ok_or_else(|| format!("--repo must be owner/name, got {slug:?}\n{USAGE}"))?;
+                Some(Repo {
+                    owner: owner.to_string(),
+                    name: name.to_string(),
+                })
+            }
+        };
+        Ok(Args { repo, pr })
     }
 }
 
@@ -60,6 +65,20 @@ fn main() {
     // and width the user asked for rather than a default that flips.
     let (config, config_error) = config::load(&config::default_path());
 
+    let forge = std::sync::Arc::new(GitHub::new(Gh));
+    // Resolved before the window opens: failing here should print why and exit,
+    // not open a window onto an empty rail that gives no clue what went wrong.
+    let repo = match args.repo.clone() {
+        Some(repo) => repo,
+        None => match forge.current_repo() {
+            Ok(repo) => repo,
+            Err(e) => {
+                eprintln!("could not tell which repository this is: {e}\n{USAGE}");
+                std::process::exit(2);
+            }
+        },
+    };
+
     application().run(move |cx: &mut App| {
         cx.bind_keys(navigate::key_bindings());
         let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
@@ -71,8 +90,8 @@ fn main() {
             |window, cx| {
                 cx.new(|cx| {
                     Workspace::new(
-                        std::sync::Arc::new(GitHub::new(Gh)),
-                        args.repo.clone(),
+                        forge.clone(),
+                        repo.clone(),
                         args.pr,
                         config.clone(),
                         config_error.clone(),
@@ -98,7 +117,8 @@ mod tests {
     #[test]
     fn repo_is_split_into_owner_and_name() {
         let a = parse(&["--repo", "cli/cli"]).unwrap();
-        assert_eq!((a.repo.owner.as_str(), a.repo.name.as_str()), ("cli", "cli"));
+        let repo = a.repo.unwrap();
+        assert_eq!((repo.owner.as_str(), repo.name.as_str()), ("cli", "cli"));
         assert_eq!(a.pr, None);
     }
 
@@ -108,9 +128,11 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_repo_is_an_error_with_usage_rather_than_a_panic() {
-        let err = parse(&[]).unwrap_err();
-        assert!(err.contains("--repo"), "got: {err}");
+    fn no_repo_flag_means_ask_the_checkout_rather_than_fail() {
+        // The common case: run it in the repo you are working in. Requiring
+        // the flag is how you end up reviewing whatever was last typed.
+        assert!(parse(&[]).unwrap().repo.is_none());
+        assert!(parse(&["--pr", "7"]).unwrap().repo.is_none());
     }
 
     #[test]
