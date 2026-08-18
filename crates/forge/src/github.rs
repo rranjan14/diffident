@@ -21,7 +21,7 @@ impl<R: GhRunner> GitHub<R> {
 /// The `--json` field set for list queries. Kept as a constant so the tests
 /// and the call site cannot drift apart.
 const LIST_FIELDS: &str = "number,title,headRefName,baseRefName,isDraft,url,isCrossRepository,headRefOid";
-const DETAIL_FIELDS: &str = "number,title,headRefName,baseRefName,headRefOid";
+const DETAIL_FIELDS: &str = "number,title,headRefName,baseRefName,headRefOid,isDraft";
 
 fn decode<T: serde::de::DeserializeOwned>(raw: &str) -> Result<T, GhError> {
     serde_json::from_str(raw).map_err(|e| GhError::BadOutput(e.to_string()))
@@ -165,8 +165,8 @@ mod tests {
     #[test]
     fn pr_detail_requests_the_head_sha_because_it_keys_the_session() {
         let gh = FakeGh::new().with(
-            "pr view 7 --repo o/r --json number,title,headRefName,baseRefName,headRefOid",
-            r#"{"number":7,"title":"t","headRefName":"h","baseRefName":"main","headRefOid":"abc"}"#,
+            "pr view 7 --repo o/r --json number,title,headRefName,baseRefName,headRefOid,isDraft",
+            r#"{"number":7,"title":"t","headRefName":"h","baseRefName":"main","headRefOid":"abc","isDraft":false}"#,
         );
         let detail = GitHub::new(gh).pr_detail(&repo(), 7).unwrap();
         assert_eq!(detail.head_ref_oid, "abc");

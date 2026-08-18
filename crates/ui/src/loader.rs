@@ -139,6 +139,33 @@ pub fn list_reviews<F: Forge + ?Sized>(forge: &F, repo: &Repo) -> Result<Vec<Rev
         .collect())
 }
 
+/// A rail entry for one pull request, fetched by number.
+///
+/// The listing covers open PRs only, so a merged or closed number — or one
+/// past the listing's limit — is absent from it. Asking for such a PR used to
+/// do nothing at all; this is how it gets a rail entry anyway. `depth` is 0
+/// because stack order is a property of the listing it was not part of.
+pub fn review_for<F: Forge + ?Sized>(
+    forge: &F,
+    repo: &Repo,
+    number: u32,
+) -> Result<Review, GhError> {
+    let detail = forge.pr_detail(repo, number)?;
+    Ok(Review {
+        id: ReviewId {
+            repo: repo.slug(),
+            number: detail.number,
+        },
+        title: detail.title,
+        branch: detail.head_ref_name,
+        depth: 0,
+        is_draft: detail.is_draft,
+        head_sha: detail.head_ref_oid,
+        rebased: false,
+        state: LoadState::Idle,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,8 +180,8 @@ mod tests {
     }
 
     const DETAIL_ARGS: &str =
-        "pr view 7 --repo o/r --json number,title,headRefName,baseRefName,headRefOid";
-    const DETAIL_JSON: &str = r#"{"number":7,"title":"t","headRefName":"h","baseRefName":"main","headRefOid":"abc"}"#;
+        "pr view 7 --repo o/r --json number,title,headRefName,baseRefName,headRefOid,isDraft";
+    const DETAIL_JSON: &str = r#"{"number":7,"title":"t","headRefName":"h","baseRefName":"main","headRefOid":"abc","isDraft":false}"#;
     const DIFF: &str =
         "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n";
 
