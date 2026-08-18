@@ -56,6 +56,9 @@ pub struct PrDetail {
     /// Head commit SHA. Half of the session key — when this moves, drafts
     /// belong to a new session (spec §7).
     pub head_ref_oid: String,
+    /// Needed because a PR fetched by number never passed through the listing
+    /// that would otherwise have supplied it.
+    pub is_draft: bool,
 }
 
 /// The one seam between diffident and a code host.

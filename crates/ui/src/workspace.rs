@@ -80,6 +80,11 @@ pub struct Workspace {
     forge: Arc<dyn Forge + Send + Sync>,
     repo: Repo,
     reviews: Vec<Review>,
+    /// The PR named on the command line, if any. Kept rather than consumed
+    /// because the listing covers open PRs only: a merged or closed number has
+    /// to be re-fetched on every refresh or it drops out of the rail — taking
+    /// the review you are reading with it.
+    requested: Option<u32>,
     active: Option<usize>,
     /// Resident diffs, in-flight fetches, and remembered cursors (§9 Phase 3).
     ///
@@ -186,6 +191,7 @@ impl Workspace {
             forge,
             repo: repo.clone(),
             reviews: Vec::new(),
+            requested: open_pr,
             active: None,
             residency: Residency::new(RESIDENT),
             reviewed: Reviewed::new(),
@@ -204,7 +210,7 @@ impl Workspace {
             focus: cx.focus_handle(),
             error: config_error,
         };
-        this.refresh(open_pr, cx);
+        this.refresh(true, cx);
         this
     }
 
@@ -212,20 +218,49 @@ impl Workspace {
     ///
     /// `gh` is a blocking subprocess, so it must not run on the foreground
     /// executor — a 400ms list call there freezes the window.
-    fn refresh(&mut self, open_pr: Option<u32>, cx: &mut Context<Self>) {
+    fn refresh(&mut self, select_requested: bool, cx: &mut Context<Self>) {
         let repo = self.repo.clone();
         let forge = self.forge.clone();
+        let requested = self.requested;
         cx.spawn(async move |this, cx| {
-            let listed = cx
+            let (listed, extra) = cx
                 .background_executor()
-                .spawn(async move { list_reviews(forge.as_ref(), &repo) })
+                .spawn(async move {
+                    let listed = list_reviews(forge.as_ref(), &repo);
+                    // The listing is open PRs only. A merged or closed number
+                    // is simply absent from it, and asking for one used to
+                    // select nothing at all — you passed `pr 9601` and the pane
+                    // said "select a review". Fetch it directly instead.
+                    let extra = match (&listed, requested) {
+                        (Ok(reviews), Some(n))
+                            if !reviews.iter().any(|r| r.id.number == n) =>
+                        {
+                            Some(crate::loader::review_for(forge.as_ref(), &repo, n))
+                        }
+                        _ => None,
+                    };
+                    (listed, extra)
+                })
                 .await;
             this.update(cx, |this, cx| {
                 match listed {
                     Ok(listed) => {
                         this.error = None;
+                        let mut incoming = listed;
+                        match extra {
+                            Some(Ok(review)) => incoming.push(review),
+                            // Asked for by number and not found: say so, rather
+                            // than leaving an empty pane that blames no one.
+                            Some(Err(e)) => {
+                                this.error = Some(match requested {
+                                    Some(n) => format!("could not open #{n}: {e}"),
+                                    None => e.to_string(),
+                                })
+                            }
+                            None => {}
+                        }
                         let mut moved = Vec::new();
-                        this.reviews = listed
+                        this.reviews = incoming
                             .into_iter()
                             .map(|mut fresh| {
                                 // Carry over what the listing does not know, and
@@ -258,7 +293,10 @@ impl Workspace {
                         {
                             this.select(ix, cx);
                         }
-                        if let Some(number) = open_pr
+                        // Only on the first load: a manual refresh should not
+                        // yank the reviewer back to the PR they started from.
+                        if select_requested
+                            && let Some(number) = requested
                             && let Some(ix) =
                                 this.reviews.iter().position(|r| r.id.number == number)
                         {
@@ -2118,7 +2156,7 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &ToggleReviewed, _, cx| this.toggle_reviewed(cx)))
             .on_action(cx.listener(|this, _: &NextUnreviewed, _, cx| this.next_unreviewed(cx)))
-            .on_action(cx.listener(|this, _: &Refresh, _, cx| this.refresh(None, cx)))
+            .on_action(cx.listener(|this, _: &Refresh, _, cx| this.refresh(false, cx)))
             .on_action(cx.listener(|this, _: &HalfPageDown, _, cx| this.half_page(true, cx)))
             .on_action(cx.listener(|this, _: &HalfPageUp, _, cx| this.half_page(false, cx)))
             .on_action(cx.listener(|this, _: &LineComment, window, cx| {
@@ -2444,6 +2482,81 @@ mod tests {
         // element tree, so an undrawn window has no `Diff` scope to match.
         cx.run_until_parked();
         (workspace, cx)
+    }
+
+    /// `diffident pr <n>` must open <n>, including when <n> is not open.
+    ///
+    /// The listing is open PRs only, so a merged number is absent from it.
+    /// This used to fall through a `position()` that found nothing and select
+    /// silently — you asked for #9601 and got "select a review".
+    #[gpui::test]
+    fn a_merged_pr_asked_for_by_number_still_reaches_the_rail(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let gh = FakeGh::new()
+            .with(
+                "pr list --repo o/r --state open --limit 100 --json number,title,headRefName,baseRefName,isDraft,url,isCrossRepository,headRefOid",
+                r#"[{"number":14166,"title":"open one","headRefName":"h","baseRefName":"trunk","isDraft":false,"url":"u","isCrossRepository":false,"headRefOid":"abc"}]"#,
+            )
+            .with(
+                "pr view 9601 --repo o/r --json number,title,headRefName,baseRefName,headRefOid,isDraft",
+                r#"{"number":9601,"title":"bump sigstore-go","headRefName":"dependabot/x","baseRefName":"trunk","headRefOid":"deadbeef","isDraft":false}"#,
+            );
+        let repo = diffident_forge::Repo {
+            owner: "o".into(),
+            name: "r".into(),
+        };
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            Workspace::new(
+                Arc::new(GitHub::new(gh)),
+                repo,
+                Some(9601),
+                Default::default(),
+                None,
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |this, _| {
+            assert!(
+                this.reviews.iter().any(|r| r.id.number == 9601),
+                "the number asked for must reach the rail: {:?}",
+                this.reviews.iter().map(|r| r.id.number).collect::<Vec<_>>()
+            );
+            assert_eq!(this.active_number(), Some(9601), "and be the active review");
+        });
+    }
+
+    /// A number that is not a pull request at all must say so.
+    #[gpui::test]
+    fn a_number_that_does_not_exist_says_so_rather_than_showing_an_empty_pane(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let gh = FakeGh::new().with(
+            "pr list --repo o/r --state open --limit 100 --json number,title,headRefName,baseRefName,isDraft,url,isCrossRepository,headRefOid",
+            "[]",
+        );
+        let repo = diffident_forge::Repo {
+            owner: "o".into(),
+            name: "r".into(),
+        };
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            Workspace::new(
+                Arc::new(GitHub::new(gh)),
+                repo,
+                Some(999999),
+                Default::default(),
+                None,
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |this, _| {
+            let error = this.error.clone().expect("an unopenable number must explain itself");
+            assert!(error.contains("999999"), "got: {error}");
+        });
     }
 
     /// Everything below rests on this: a simulated keystroke must travel the
