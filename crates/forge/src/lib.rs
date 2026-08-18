@@ -67,6 +67,18 @@ pub struct PrDetail {
 /// which forced callers to carry two handles to the same host — that is the
 /// mistake this rule exists to prevent recurring.
 pub trait Forge {
+    /// The repository the current working directory belongs to.
+    ///
+    /// Exists so `--repo` can be optional. Every other tool in this space
+    /// infers the repo from the checkout you are standing in; requiring it to
+    /// be typed means the repo you get is whatever was on the command line,
+    /// which is how you end up reviewing strangers' pull requests.
+    ///
+    /// `gh` already does this resolution — it reads the remote, follows forks
+    /// to their parent, and honours `GH_REPO`. Asking it is both less code
+    /// than parsing `git remote` and more correct.
+    fn current_repo(&self) -> Result<Repo, gh::GhError>;
+
     fn list_prs(&self, repo: &Repo) -> Result<Vec<PrSummary>, gh::GhError>;
     fn pr_detail(&self, repo: &Repo, number: u32) -> Result<PrDetail, gh::GhError>;
     /// Raw unified diff text. Intentionally a `String`: this layer knows
